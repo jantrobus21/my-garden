@@ -1,0 +1,158 @@
+{
+  "app_name": "BotanIQ",
+  "personality": "1 iOS-Native Clean (Earthy Botanical Theme)",
+  "personality_one_liner": "A structured, highly readable, and calming workspace that feels like a modern greenhouse laboratory.",
+  "color": {
+    "surface": "#F9FAF7",
+    "onSurface": "#1A211C",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#3A453C",
+    "surfaceTertiary": "#EAEFE8",
+    "onSurfaceTertiary": "#29322A",
+    "surfaceInverse": "#232A25",
+    "onSurfaceInverse": "#F0F4EE",
+    "brand": "#3C6E4A",
+    "brandPrimary": "#3C6E4A",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#D3E3D7",
+    "onBrandSecondary": "#1E3D27",
+    "brandTertiary": "#E5EDE8",
+    "onBrandTertiary": "#2A5235",
+    "success": "#367548",
+    "onSuccess": "#FFFFFF",
+    "warning": "#C27A30",
+    "onWarning": "#FFFFFF",
+    "error": "#B84A4A",
+    "onError": "#FFFFFF",
+    "info": "#4A6E78",
+    "onInfo": "#FFFFFF",
+    "border": "#E1E8E2",
+    "borderStrong": "#B9C7BC",
+    "divider": "#E6EDE8"
+  },
+  "typography": {
+    "displayFontFamily": "Plus Jakarta Sans",
+    "textFontFamily": "Plus Jakarta Sans",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Generous vertical breathing room. Cards and list rows should have significant inner padding. Metric blocks should cluster data tightly but leave ample negative space around the block itself.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Phosphor",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Apply glass blur to the bottom tab bar and sticky headers.",
+      "Use heavy glass scrims overlaid on the camera viewfinder screen for mode selection (Health / Meter / QR).",
+      "Use subtle glass over the hero images on Plant Detail screens for back buttons and floating actions."
+    ],
+    "dont's": [
+      "Do not blur standard data cards or form fields.",
+      "Do not use glass effects on the main dashboard background."
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Dashboard",
+      "purpose": "Overview of all tracked plants, their current health, and immediate action items (e.g., Needs Water).",
+      "states": {
+        "loading": "Centered brand-tinted spinner.",
+        "empty": "Illustration of an empty modern planter. Text: 'Your greenhouse is empty. Add a plant to start tracking.' Primary CTA: 'Add First Plant'.",
+        "error": "Readable text: 'Failed to load plants.' + Retry button."
+      },
+      "layout": "Top section: 'My Plants' header with a quick summary badge (e.g., '2 Need Water'). Main content: 2-column grid of Plant Cards. Each card uses a photo background with a heavy gradient-to-dark scrim. Plant name is bottom-left (onSurfaceInverse), and a status chip (e.g., 'Thirsty' in warning colors) sits at the top right of the card. The cards must fill the horizontal space using flexWrap: 'wrap' and justifyContent: 'space-between' with md gap."
+    },
+    {
+      "name": "PlantDetail",
+      "purpose": "Deep dive into a specific plant's metrics, history, and AI recommendations.",
+      "states": {
+        "loading": "Skeleton loaders for hero image and metric blocks.",
+        "empty": "N/A - detailed view of existing plant.",
+        "error": "Error message with 'Retry' button."
+      },
+      "layout": "Full-bleed hero image at the top with a vertical gradient scrim (transparent to 80% surfaceInverse). A sticky glass header appears on scroll with the Back button. Below the image: A 2x2 grid of metric cards (Moisture, Fertility, Light, pH) using surfaceSecondary. Below metrics: A chronological list (Timeline) of past readings and AI analyses. A sticky primary CTA at the bottom (floating above content): 'Log New Reading' (opens scan sheet)."
+    },
+    {
+      "name": "ScanHub",
+      "purpose": "The core camera interface for scanning QR tags, reading meters, and taking AI health photos.",
+      "states": {
+        "loading": "Camera initialization spinner.",
+        "empty": "N/A",
+        "error": "'Camera permission required' overlay with CTA to open settings."
+      },
+      "layout": "Full-screen camera view (use expo-camera or a simulated dark image background). Top safe area contains a glass 'Close' button. Center has a subtle viewfinder frame outline. At the bottom, a persistent glass-effect Bottom Sheet houses a Segmented Control (QR / Meter / Health) and a large primary capture button (pill shape). Upon capture, it transitions to the ScanResult modal."
+    },
+    {
+      "name": "ScanResult",
+      "purpose": "Displays the AI-extracted data from the camera (meter readings or health issues) for user confirmation before saving.",
+      "states": {
+        "loading": "Analyzing image (shimmering skeleton or progress pulse).",
+        "empty": "N/A",
+        "error": "'Could not read meter clearly.' Retry CTA."
+      },
+      "layout": "Modal/Sheet layout. Top shows the cropped captured image. Middle section displays parsed data in large typography (e.g., 'Moisture: 72%'). Bottom section has a sticky primary 'Save to Plant' button and a secondary 'Retake' button."
+    }
+  ],
+  "images": {
+    "plant_monstera": {
+      "url": "https://images.unsplash.com/photo-1614594975525-e45190c55d0b?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NjZ8MHwxfHNlYXJjaHwxfHxtb25zdGVyYSUyMGhvdXNlcGxhbnQlMjBpbmRvb3JzfGVufDB8fHx8MTc4Mjc2MzI5OXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Monstera plant in white ceramic pot"
+    },
+    "plant_fiddle_leaf": {
+      "url": "https://images.unsplash.com/photo-1603095737639-f75134da4085?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2OTV8MHwxfHNlYXJjaHwyfHxtb25zdGVyYSUyMGhvdXNlcGxhbnQlMjBpbmRvb3JzfGVufDB8fHx8MTc4Mjc2MzI5OXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Fiddle leaf fig plant indoors"
+    },
+    "camera_viewfinder_bg": {
+      "url": "https://images.unsplash.com/photo-1632399118861-ef169fc3d99d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2Mzl8MHwxfHNlYXJjaHwyfHxjYW1lcmElMjBzY2FubmVyJTIwb3ZlcmxheSUyMHVpJTIwYmxhbmt8ZW58MHx8fGdyZWVufDE3ODI3NjMyOTN8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Camera view background mockup"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly follow the botanical iOS-Native Clean color palette. Do NOT use any blue, indigo, or purple defaults. Rely on the #3C6E4A green and off-white/sage neutrals provided in the JSON.",
+    "Implement the 'PlantDetail' hero image with the REQUIRED gradient-to-dark scrim pattern: transparent at top -> 80% surfaceInverse at bottom, ensuring the white text (onSurfaceInverse) is readable over the plant photos.",
+    "For the 'Dashboard' 2-column grid, use flexWrap: 'wrap', justifyContent: 'space-between', and width: '48%' or calculated flex space per card to ensure columns look balanced.",
+    "Implement a unified 'ScanHub' using a simulated full-screen camera view. Ensure the bottom action sheet uses a glass effect (blur) and contains the mode toggle (Health / Meter / QR).",
+    "Ensure all metric numbers (Moisture %, pH level) use a clear, readable scale (2xl or 3xl) with proper contrast against surfaceSecondary.",
+    "Include haptics on the ScanHub capture button and when switching between scan modes."
+  ],
+  "haptics": {
+    "primary_button_press": "impactLight",
+    "scan_mode_toggle": "selection",
+    "camera_capture": "impactMedium",
+    "reading_saved": "notificationSuccess",
+    "scan_error": "notificationError"
+  }
+}

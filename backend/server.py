@@ -212,9 +212,23 @@ class SetupPayload(PinPayload):
     setup_code: str = Field(..., min_length=4, max_length=128)
 
 
+class ChangePinPayload(BaseModel):
+    current_pin: str = Field(..., min_length=MIN_PIN_LENGTH, max_length=10)
+    new_pin: str = Field(..., min_length=MIN_PIN_LENGTH, max_length=10)
+
+
+class ResetPinPayload(BaseModel):
+    recovery_code: str = Field(..., min_length=8, max_length=64)
+    new_pin: str = Field(..., min_length=MIN_PIN_LENGTH, max_length=10)
+
+
 class AuthOk(BaseModel):
     token: str
     expires_at: datetime
+
+
+class SetupOk(AuthOk):
+    recovery_code: str
 
 
 async def _create_session() -> dict:
@@ -258,7 +272,13 @@ async def health():
     }
 
 
-@api_router.post("/auth/setup", response_model=AuthOk)
+def _generate_recovery_code() -> str:
+    """Human-friendly 16-char recovery code: 4 groups of 4 hex chars."""
+    raw = secrets.token_hex(8).upper()
+    return f"{raw[0:4]}-{raw[4:8]}-{raw[8:12]}-{raw[12:16]}"
+
+
+@api_router.post("/auth/setup", response_model=SetupOk)
 async def auth_setup(payload: SetupPayload):
     if not payload.pin.isdigit():
         raise HTTPException(status_code=400, detail="PIN must be digits only")
@@ -270,16 +290,19 @@ async def auth_setup(payload: SetupPayload):
     if existing is not None:
         raise HTTPException(status_code=409, detail="Already configured. Use /auth/login.")
     pin_hash = pwd_context.hash(payload.pin)
+    recovery_code = _generate_recovery_code()
+    recovery_hash = pwd_context.hash(recovery_code)
     await db.admin.insert_one({
         "_id": "admin",
         "pin_hash": pin_hash,
+        "recovery_hash": recovery_hash,
         "created_at": datetime.now(timezone.utc),
         "failed_attempts": 0,
         "total_failed": 0,
         "lock_until": None,
     })
     session = await _create_session()
-    return AuthOk(token=session["token"], expires_at=session["expires_at"])
+    return SetupOk(token=session["token"], expires_at=session["expires_at"], recovery_code=recovery_code)
 
 
 def _lock_seconds_for(total_failed: int) -> int:
@@ -336,8 +359,79 @@ async def auth_logout(session: dict = Depends(require_auth)):
 
 
 @api_router.get("/auth/me")
-async def auth_me(session: dict = Depends(require_auth)):
-    return {"ok": True}
+async def auth_me(_: dict = Depends(require_auth)):
+    admin = await db.admin.find_one({"_id": "admin"}, {"_id": 0, "created_at": 1})
+    return {
+        "ok": True,
+        "created_at": admin.get("created_at") if admin else None,
+    }
+
+
+@api_router.post("/auth/change-pin", response_model=AuthOk)
+async def auth_change_pin(payload: ChangePinPayload, session: dict = Depends(require_auth)):
+    if not payload.new_pin.isdigit() or not payload.current_pin.isdigit():
+        raise HTTPException(status_code=400, detail="PIN must be digits only")
+    admin = await db.admin.find_one({"_id": "admin"})
+    if not admin:
+        raise HTTPException(status_code=400, detail="Not configured")
+    if not pwd_context.verify(payload.current_pin, admin["pin_hash"]):
+        raise HTTPException(status_code=401, detail="Current PIN is incorrect")
+    if payload.new_pin == payload.current_pin:
+        raise HTTPException(status_code=400, detail="New PIN must be different")
+    new_hash = pwd_context.hash(payload.new_pin)
+    await db.admin.update_one({"_id": "admin"}, {"$set": {"pin_hash": new_hash}})
+    # Invalidate all other sessions; keep this one alive.
+    await db.sessions.delete_many({"token_hash": {"$ne": session["token_hash"]}})
+    expires_at = session.get("expires_at") or datetime.now(timezone.utc)
+    return AuthOk(token="ROTATED", expires_at=expires_at)
+
+
+@api_router.post("/auth/regenerate-recovery")
+async def auth_regenerate_recovery(_: dict = Depends(require_auth)):
+    new_code = _generate_recovery_code()
+    new_hash = pwd_context.hash(new_code)
+    await db.admin.update_one({"_id": "admin"}, {"$set": {"recovery_hash": new_hash}})
+    return {"recovery_code": new_code}
+
+
+@api_router.post("/auth/reset-pin-with-code")
+async def auth_reset_pin_with_code(payload: ResetPinPayload):
+    if not payload.new_pin.isdigit():
+        raise HTTPException(status_code=400, detail="PIN must be digits only")
+    admin = await db.admin.find_one({"_id": "admin"})
+    if not admin:
+        raise HTTPException(status_code=400, detail="Not configured")
+    recovery_hash = admin.get("recovery_hash")
+    if not recovery_hash:
+        raise HTTPException(status_code=400, detail="No recovery code set for this account")
+    submitted = payload.recovery_code.upper().replace(" ", "")
+    if "-" not in submitted and len(submitted) == 16:
+        submitted = f"{submitted[0:4]}-{submitted[4:8]}-{submitted[8:12]}-{submitted[12:16]}"
+    if not pwd_context.verify(submitted, recovery_hash):
+        await db.admin.find_one_and_update(
+            {"_id": "admin"},
+            {"$inc": {"failed_attempts": 1, "total_failed": 1}},
+        )
+        raise HTTPException(status_code=401, detail="Invalid recovery code")
+    new_pin_hash = pwd_context.hash(payload.new_pin)
+    new_recovery = _generate_recovery_code()
+    new_recovery_hash = pwd_context.hash(new_recovery)
+    await db.admin.update_one(
+        {"_id": "admin"},
+        {"$set": {
+            "pin_hash": new_pin_hash,
+            "recovery_hash": new_recovery_hash,
+            "failed_attempts": 0,
+            "lock_until": None,
+        }},
+    )
+    await db.sessions.delete_many({})
+    session = await _create_session()
+    return {
+        "token": session["token"],
+        "expires_at": session["expires_at"],
+        "recovery_code": new_recovery,
+    }
 
 
 # Protected router for all data endpoints
@@ -977,3 +1071,31 @@ async def _startup():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
+
+app.include_router(api_router)
+app.include_router(protected_router)
+
+# Build CORS allowlist from envs; use safe default if not provided.
+_cors_env = os.environ.get("APP_CORS_ORIGINS", "")
+_cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+if not _cors_origins:
+    # Preview/prod URL is configured in frontend .env; mirror it here.
+    _proxy = os.environ.get("EXPO_PACKAGER_PROXY_URL", "")
+    if _proxy:
+        _cors_origins.append(_proxy.rstrip("/"))
+    # Allow Expo dev tooling on localhost
+    _cors_origins.extend(["http://localhost:19006", "http://localhost:8081"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)

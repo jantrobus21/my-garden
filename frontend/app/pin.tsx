@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 
 import { api, saveToken } from "@/src/api";
@@ -27,6 +28,7 @@ export default function PinScreen() {
   const [setupEnabled, setSetupEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [postSetupCode, setPostSetupCode] = useState<string | null>(null);
   const inputRef = useRef<TextInput | null>(null);
 
   useEffect(() => {
@@ -60,7 +62,11 @@ export default function PinScreen() {
         : await api.loginPin(pin);
       await saveToken(res.token);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.replace("/(tabs)");
+      if (mode === "setup" && "recovery_code" in res) {
+        setPostSetupCode((res as any).recovery_code);
+      } else {
+        router.replace("/(tabs)");
+      }
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       const msg = String(e?.message || "");
@@ -82,6 +88,38 @@ export default function PinScreen() {
 
   return (
     <SafeAreaView style={styles.container} testID="pin-screen">
+      {postSetupCode ? (
+        <View style={styles.successWrap}>
+          <View style={styles.iconWrap}>
+            <Ionicons name="key" size={48} color={colors.brandPrimary} />
+          </View>
+          <Text style={styles.title}>Save your recovery code</Text>
+          <Text style={styles.subtitle}>
+            We&apos;ll only show this once. You&apos;ll need it to reset your PIN if you ever forget it.
+          </Text>
+          <View style={styles.codeBox}>
+            <Text testID="setup-recovery-code" selectable style={styles.codeText}>{postSetupCode}</Text>
+          </View>
+          <Pressable
+            testID="copy-recovery"
+            onPress={async () => {
+              await Clipboard.setStringAsync(postSetupCode);
+              Haptics.selectionAsync();
+            }}
+            style={[styles.cta, { backgroundColor: colors.brandSecondary }]}
+          >
+            <Ionicons name="copy-outline" size={16} color={colors.onBrandSecondary} />
+            <Text style={[styles.ctaText, { color: colors.onBrandSecondary }]}>Copy code</Text>
+          </Pressable>
+          <Pressable
+            testID="finish-setup"
+            onPress={() => router.replace("/(tabs)")}
+            style={styles.cta}
+          >
+            <Text style={styles.ctaText}>I&apos;ve saved it — continue</Text>
+          </Pressable>
+        </View>
+      ) : (
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         style={{ flex: 1 }}
@@ -152,13 +190,22 @@ export default function PinScreen() {
                 <Text style={styles.hint}>
                   6–10 digits. You&apos;ll use this PIN whenever the app needs to re-authenticate.
                 </Text>
-              ) : null}
+              ) : (
+                <Pressable
+                  testID="forgot-pin-link"
+                  onPress={() => router.push("/forgot-pin")}
+                  hitSlop={10}
+                >
+                  <Text style={styles.linkText}>Forgot PIN? Reset with recovery code</Text>
+                </Pressable>
+              )}
             </>
           ) : (
             <ActivityIndicator color={colors.brandPrimary} />
           )}
         </View>
       </KeyboardAvoidingView>
+      )}
     </SafeAreaView>
   );
 }
@@ -198,4 +245,13 @@ const styles = StyleSheet.create({
   ctaText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 16 },
   error: { color: colors.error, fontSize: 13 },
   hint: { color: colors.onSurfaceSecondary, fontSize: 12, textAlign: "center", marginTop: spacing.sm, lineHeight: 17 },
+  linkText: { color: colors.brandPrimary, fontWeight: "600", fontSize: 13, marginTop: spacing.sm, textDecorationLine: "underline" },
+  successWrap: { flex: 1, alignItems: "center", justifyContent: "center", padding: spacing.xl, gap: spacing.md },
+  codeBox: {
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    paddingVertical: spacing.lg, paddingHorizontal: spacing.lg,
+    width: "100%",
+  },
+  codeText: { fontSize: 20, fontWeight: "700", color: colors.onSurface, letterSpacing: 2, textAlign: "center" },
 });

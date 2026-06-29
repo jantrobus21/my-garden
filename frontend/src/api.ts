@@ -99,7 +99,7 @@ export const api = {
   health: () =>
     req<{ status: string; configured: boolean; setup_enabled: boolean }>("/health", undefined, { skipAuth: true }),
   setupPin: (pin: string, setup_code: string) =>
-    req<{ token: string; expires_at: string }>("/auth/setup", {
+    req<{ token: string; expires_at: string; recovery_code: string }>("/auth/setup", {
       method: "POST",
       body: JSON.stringify({ pin, setup_code }),
     }, { skipAuth: true }),
@@ -109,6 +109,20 @@ export const api = {
       body: JSON.stringify({ pin }),
     }, { skipAuth: true }),
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+  changePin: (current_pin: string, new_pin: string) =>
+    req<{ token: string; expires_at: string }>("/auth/change-pin", {
+      method: "POST",
+      body: JSON.stringify({ current_pin, new_pin }),
+    }),
+  regenerateRecovery: () =>
+    req<{ recovery_code: string }>("/auth/regenerate-recovery", { method: "POST" }),
+  resetPin: (recovery_code: string, new_pin: string) =>
+    req<{ token: string; expires_at: string; recovery_code: string }>(
+      "/auth/reset-pin-with-code",
+      { method: "POST", body: JSON.stringify({ recovery_code, new_pin }) },
+      { skipAuth: true }
+    ),
+  me: () => req<{ ok: boolean; created_at: string | null }>("/auth/me"),
 
   // share / printable downloads (issued protected, consumed once)
   sharePlant: (id: string) =>

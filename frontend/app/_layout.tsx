@@ -68,6 +68,7 @@ export default function RootLayout() {
         <StatusBar style="dark" />
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#F9FAF7" } }}>
           <Stack.Screen name="pin" />
+          <Stack.Screen name="forgot-pin" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="add-plant" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
           <Stack.Screen name="edit-plant/[id]" options={{ presentation: "modal", animation: "slide_from_bottom" }} />

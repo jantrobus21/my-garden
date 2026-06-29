@@ -6,6 +6,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { Image } from "expo-image";
@@ -16,6 +17,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { api, HealthAnalysis, Plant, Reading } from "@/src/api";
 import { colors, radius, spacing, statusMeta } from "@/src/theme";
+import QrScannerModal from "@/src/components/QrScannerModal";
 
 const FALLBACK_IMG = "https://images.unsplash.com/photo-1614594975525-e45190c55d0b?crop=entropy&cs=srgb&fm=jpg&w=900&q=80";
 
@@ -28,6 +30,11 @@ export default function PlantDetail() {
   const [readings, setReadings] = useState<Reading[]>([]);
   const [analyses, setAnalyses] = useState<HealthAnalysis[]>([]);
   const [loading, setLoading] = useState(true);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [editingQr, setEditingQr] = useState(false);
+  const [qrDraft, setQrDraft] = useState("");
+  const [qrError, setQrError] = useState<string | null>(null);
+  const [savingQr, setSavingQr] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -79,6 +86,36 @@ export default function PlantDetail() {
     ]);
   };
 
+  const startEditingQr = () => {
+    setQrDraft(plant.qr_code || "");
+    setQrError(null);
+    setEditingQr(true);
+  };
+
+  const saveQr = async (raw: string) => {
+    const next = raw.trim();
+    if (!next) {
+      setQrError("QR code cannot be empty");
+      return;
+    }
+    setSavingQr(true);
+    setQrError(null);
+    try {
+      const updated = await api.updatePlant(plant.id, { qr_code: next });
+      setPlant(updated);
+      setEditingQr(false);
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (msg.includes("409")) {
+        setQrError("That QR code is already assigned to another plant.");
+      } else {
+        setQrError("Could not save. Please try again.");
+      }
+    } finally {
+      setSavingQr(false);
+    }
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.surface }} testID="plant-detail-screen">
       <ScrollView contentContainerStyle={{ paddingBottom: 140 }}>
@@ -112,13 +149,61 @@ export default function PlantDetail() {
         </View>
 
         <View style={styles.body}>
-          <View style={styles.qrCard}>
-            <View>
+          {editingQr ? (
+            <View style={styles.qrCardEdit}>
               <Text style={styles.qrLabel}>Plant Tag</Text>
-              <Text style={styles.qrCode} testID="plant-qr-code">{plant.qr_code}</Text>
+              <View style={styles.qrEditRow}>
+                <TextInput
+                  testID="plant-qr-input"
+                  value={qrDraft}
+                  onChangeText={(t) => { setQrDraft(t); setQrError(null); }}
+                  placeholder="Type or scan QR code"
+                  placeholderTextColor="#8a988c"
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  style={styles.qrInput}
+                />
+                <Pressable
+                  testID="plant-qr-scan"
+                  onPress={() => setScannerOpen(true)}
+                  style={styles.qrScanBtn}
+                >
+                  <Ionicons name="qr-code-outline" size={18} color={colors.onBrandPrimary} />
+                </Pressable>
+              </View>
+              {qrError ? <Text style={styles.qrErr}>{qrError}</Text> : null}
+              <View style={styles.qrEditActions}>
+                <Pressable
+                  testID="plant-qr-cancel"
+                  onPress={() => { setEditingQr(false); setQrError(null); }}
+                  style={[styles.qrActionBtn, styles.qrActionGhost]}
+                >
+                  <Text style={styles.qrActionGhostText}>Cancel</Text>
+                </Pressable>
+                <Pressable
+                  testID="plant-qr-save"
+                  disabled={savingQr}
+                  onPress={() => saveQr(qrDraft)}
+                  style={[styles.qrActionBtn, styles.qrActionPrimary, savingQr && { opacity: 0.6 }]}
+                >
+                  {savingQr ? (
+                    <ActivityIndicator color={colors.onBrandPrimary} />
+                  ) : (
+                    <Text style={styles.qrActionPrimaryText}>Save tag</Text>
+                  )}
+                </Pressable>
+              </View>
             </View>
-            <Ionicons name="qr-code" size={36} color={colors.brandPrimary} />
-          </View>
+          ) : (
+            <Pressable testID="plant-qr-card" onPress={startEditingQr} style={styles.qrCard}>
+              <View>
+                <Text style={styles.qrLabel}>Plant Tag</Text>
+                <Text style={styles.qrCode} testID="plant-qr-code">{plant.qr_code}</Text>
+                <Text style={styles.qrHint}>Tap to scan or edit</Text>
+              </View>
+              <Ionicons name="qr-code" size={36} color={colors.brandPrimary} />
+            </Pressable>
+          )}
 
           <Text style={styles.sectionTitle}>Latest Readings</Text>
           <View style={styles.metricGrid}>
@@ -188,6 +273,17 @@ export default function PlantDetail() {
           <Text style={styles.ctaText}>Log New Reading</Text>
         </Pressable>
       </View>
+
+      <QrScannerModal
+        visible={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onScanned={(code) => {
+          setScannerOpen(false);
+          setQrDraft(code);
+          setEditingQr(true);
+          saveQr(code);
+        }}
+      />
     </View>
   );
 }
@@ -232,6 +328,29 @@ const styles = StyleSheet.create({
   },
   qrLabel: { fontSize: 12, color: colors.onSurfaceSecondary, marginBottom: 4 },
   qrCode: { fontSize: 18, fontWeight: "700", color: colors.onSurface, letterSpacing: 1 },
+  qrHint: { fontSize: 11, color: colors.onSurfaceSecondary, marginTop: 4 },
+  qrCardEdit: {
+    backgroundColor: colors.surfaceSecondary, padding: spacing.lg, borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border, gap: spacing.sm,
+  },
+  qrEditRow: { flexDirection: "row", gap: spacing.sm, alignItems: "stretch" },
+  qrInput: {
+    flex: 1, backgroundColor: colors.surface,
+    borderWidth: 1, borderColor: colors.border, borderRadius: radius.md,
+    paddingHorizontal: spacing.md, paddingVertical: spacing.sm,
+    fontSize: 15, color: colors.onSurface, letterSpacing: 1,
+  },
+  qrScanBtn: {
+    backgroundColor: colors.brandPrimary, paddingHorizontal: spacing.md,
+    borderRadius: radius.md, alignItems: "center", justifyContent: "center",
+  },
+  qrErr: { color: colors.error, fontSize: 12 },
+  qrEditActions: { flexDirection: "row", gap: spacing.sm, marginTop: 4 },
+  qrActionBtn: { flex: 1, paddingVertical: spacing.sm, borderRadius: radius.pill, alignItems: "center", justifyContent: "center" },
+  qrActionGhost: { backgroundColor: colors.surfaceTertiary },
+  qrActionGhostText: { color: colors.onSurface, fontWeight: "700" },
+  qrActionPrimary: { backgroundColor: colors.brandPrimary },
+  qrActionPrimaryText: { color: colors.onBrandPrimary, fontWeight: "700" },
 
   sectionTitle: { fontSize: 18, fontWeight: "700", color: colors.onSurface, marginTop: spacing.sm },
   metricGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },

@@ -54,6 +54,7 @@ class PlantUpdate(BaseModel):
     species: Optional[str] = None
     location: Optional[str] = None
     photo_base64: Optional[str] = None
+    qr_code: Optional[str] = None
     status: Optional[str] = None
     latest_summary: Optional[str] = None
 
@@ -157,8 +158,16 @@ async def root():
 @api_router.post("/plants", response_model=Plant)
 async def create_plant(payload: PlantCreate):
     plant = Plant(**payload.model_dump())
+    if plant.qr_code:
+        plant.qr_code = plant.qr_code.strip()
     if not plant.qr_code:
         plant.qr_code = f"BIQ-{plant.id[:8].upper()}"
+    existing = await db.plants.find_one({"qr_code": plant.qr_code})
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"QR code '{plant.qr_code}' is already assigned to another plant.",
+        )
     doc = plant.model_dump()
     await db.plants.insert_one(doc)
     return plant
@@ -189,6 +198,18 @@ async def get_plant_by_qr(qr_code: str):
 @api_router.patch("/plants/{plant_id}", response_model=Plant)
 async def update_plant(plant_id: str, payload: PlantUpdate):
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "qr_code" in updates:
+        updates["qr_code"] = updates["qr_code"].strip()
+        if not updates["qr_code"]:
+            raise HTTPException(status_code=400, detail="QR code cannot be empty")
+        clash = await db.plants.find_one(
+            {"qr_code": updates["qr_code"], "id": {"$ne": plant_id}}
+        )
+        if clash:
+            raise HTTPException(
+                status_code=409,
+                detail=f"QR code '{updates['qr_code']}' is already assigned to another plant.",
+            )
     if not updates:
         doc = await db.plants.find_one({"id": plant_id}, {"_id": 0})
         if not doc:

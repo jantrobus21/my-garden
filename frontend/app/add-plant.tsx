@@ -19,15 +19,18 @@ import * as Haptics from "expo-haptics";
 
 import { api } from "@/src/api";
 import { colors, radius, spacing } from "@/src/theme";
+import QrScannerModal from "@/src/components/QrScannerModal";
 
 export default function AddPlant() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [species, setSpecies] = useState("");
   const [location, setLocation] = useState("");
+  const [qrCode, setQrCode] = useState("");
   const [photoB64, setPhotoB64] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scannerOpen, setScannerOpen] = useState(false);
 
   const pick = async (source: "camera" | "library") => {
     if (source === "camera") {
@@ -55,6 +58,7 @@ export default function AddPlant() {
         name: name.trim(),
         species: species.trim(),
         location: location.trim(),
+        qr_code: qrCode.trim(),
         photo_base64: photoB64 || "",
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -107,6 +111,36 @@ export default function AddPlant() {
           <Field label="Species" value={species} onChange={setSpecies} placeholder="e.g. Monstera deliciosa" testID="input-species" />
           <Field label="Location" value={location} onChange={setLocation} placeholder="e.g. Living room window" testID="input-location" />
 
+          <View style={{ gap: 6 }}>
+            <Text style={styles.label}>QR tag</Text>
+            <Text style={styles.helper}>
+              Already 3D-printed a tag? Scan its QR or type the code below. Leave blank to auto-generate.
+            </Text>
+            <View style={styles.qrRow}>
+              <TextInput
+                testID="input-qr"
+                value={qrCode}
+                onChangeText={setQrCode}
+                placeholder="Auto-generated if empty"
+                placeholderTextColor="#8a988c"
+                autoCapitalize="characters"
+                autoCorrect={false}
+                style={[styles.input, { flex: 1 }]}
+              />
+              <Pressable
+                testID="scan-qr-button"
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setScannerOpen(true);
+                }}
+                style={styles.scanBtn}
+              >
+                <Ionicons name="qr-code-outline" size={18} color={colors.onBrandPrimary} />
+                <Text style={styles.scanBtnText}>Scan</Text>
+              </Pressable>
+            </View>
+          </View>
+
           {error ? <Text style={styles.error}>{error}</Text> : null}
         </ScrollView>
 
@@ -116,6 +150,15 @@ export default function AddPlant() {
           </Pressable>
         </View>
       </KeyboardAvoidingView>
+
+      <QrScannerModal
+        visible={scannerOpen}
+        onClose={() => setScannerOpen(false)}
+        onScanned={(code) => {
+          setQrCode(code);
+          setScannerOpen(false);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -168,6 +211,14 @@ const styles = StyleSheet.create({
     fontSize: 15, color: colors.onSurface,
   },
   error: { color: colors.error, fontSize: 13, textAlign: "center" },
+  helper: { color: colors.onSurfaceSecondary, fontSize: 12, lineHeight: 17 },
+  qrRow: { flexDirection: "row", gap: spacing.sm, alignItems: "stretch" },
+  scanBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: colors.brandPrimary,
+    paddingHorizontal: spacing.md, borderRadius: radius.md,
+  },
+  scanBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 13 },
   footer: {
     padding: spacing.lg,
     borderTopWidth: 1, borderTopColor: colors.border,

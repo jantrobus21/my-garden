@@ -97,11 +97,11 @@ async function req<T>(path: string, init?: RequestInit, opts?: { skipAuth?: bool
 export const api = {
   // auth (skip token)
   health: () =>
-    req<{ status: string; configured: boolean }>("/health", undefined, { skipAuth: true }),
-  setupPin: (pin: string) =>
+    req<{ status: string; configured: boolean; setup_enabled: boolean }>("/health", undefined, { skipAuth: true }),
+  setupPin: (pin: string, setup_code: string) =>
     req<{ token: string; expires_at: string }>("/auth/setup", {
       method: "POST",
-      body: JSON.stringify({ pin }),
+      body: JSON.stringify({ pin, setup_code }),
     }, { skipAuth: true }),
   loginPin: (pin: string) =>
     req<{ token: string; expires_at: string }>("/auth/login", {
@@ -109,6 +109,13 @@ export const api = {
       body: JSON.stringify({ pin }),
     }, { skipAuth: true }),
   logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+
+  // share / printable downloads (issued protected, consumed once)
+  sharePlant: (id: string) =>
+    req<{ label_url: string; stl_url: string; expires_in: number }>(
+      `/plants/${id}/share`,
+      { method: "POST" }
+    ),
 
   listPlants: () => req<Plant[]>("/plants"),
   nextPlantNumber: () => req<{ plant_number: string }>("/plants/next-number"),

@@ -23,13 +23,18 @@ export default function PinScreen() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode | null>(null);
   const [pin, setPin] = useState("");
+  const [setupCode, setSetupCode] = useState("");
+  const [setupEnabled, setSetupEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<TextInput | null>(null);
 
   useEffect(() => {
     api.health()
-      .then((h) => setMode(h.configured ? "login" : "setup"))
+      .then((h) => {
+        setSetupEnabled(h.setup_enabled);
+        setMode(h.configured ? "login" : "setup");
+      })
       .catch(() => setMode("login"));
   }, []);
 
@@ -39,26 +44,35 @@ export default function PinScreen() {
 
   const submit = async () => {
     if (busy || !mode) return;
-    if (pin.length < 4 || pin.length > 10 || !/^\d+$/.test(pin)) {
-      setError("PIN must be 4–10 digits");
+    if (pin.length < 6 || pin.length > 10 || !/^\d+$/.test(pin)) {
+      setError("PIN must be 6–10 digits");
+      return;
+    }
+    if (mode === "setup" && !setupCode.trim()) {
+      setError("Setup code required (from your server's APP_SETUP_CODE)");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const res = mode === "setup" ? await api.setupPin(pin) : await api.loginPin(pin);
+      const res = mode === "setup"
+        ? await api.setupPin(pin, setupCode.trim())
+        : await api.loginPin(pin);
       await saveToken(res.token);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace("/(tabs)");
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       const msg = String(e?.message || "");
-      if (msg.includes("429")) setError("Too many attempts. Wait 30 seconds.");
-      else if (msg.includes("401")) setError("Incorrect PIN.");
+      if (msg.includes("429")) {
+        const wait = msg.match(/(\d+)s/);
+        setError(wait ? `Too many attempts. Try again in ${wait[1]}s.` : "Too many attempts.");
+      } else if (msg.includes("401")) setError("Incorrect PIN.");
+      else if (msg.includes("403")) setError("Invalid or missing setup code.");
       else if (msg.includes("409")) {
         setMode("login");
         setError("Already set up. Enter your existing PIN.");
-      } else if (msg.includes("400")) setError("PIN must be digits only.");
+      } else if (msg.includes("400")) setError("PIN must be digits only (6–10).");
       else setError("Something went wrong. Try again.");
       setPin("");
     } finally {
@@ -87,12 +101,32 @@ export default function PinScreen() {
 
           {mode !== null ? (
             <>
+              {mode === "setup" ? (
+                <>
+                  <TextInput
+                    testID="setup-code-input"
+                    value={setupCode}
+                    onChangeText={(t) => { setError(null); setSetupCode(t); }}
+                    placeholder="Setup code (from server)"
+                    placeholderTextColor="#8a988c"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    secureTextEntry
+                    style={styles.codeInput}
+                  />
+                  {!setupEnabled ? (
+                    <Text style={styles.hint}>
+                      Setup is disabled on the server. Ask the operator to set APP_SETUP_CODE in the backend .env, then restart.
+                    </Text>
+                  ) : null}
+                </>
+              ) : null}
               <TextInput
                 ref={inputRef}
                 testID="pin-input"
                 value={pin}
                 onChangeText={(t) => { setError(null); setPin(t.replace(/\D/g, "").slice(0, 10)); }}
-                placeholder="••••"
+                placeholder="••••••"
                 placeholderTextColor="#8a988c"
                 keyboardType="number-pad"
                 secureTextEntry
@@ -104,9 +138,9 @@ export default function PinScreen() {
               {error ? <Text style={styles.error}>{error}</Text> : null}
               <Pressable
                 testID="pin-submit"
-                disabled={busy || pin.length < 4}
+                disabled={busy || pin.length < 6 || (mode === "setup" && !setupCode.trim())}
                 onPress={submit}
-                style={[styles.cta, (busy || pin.length < 4) && { opacity: 0.5 }]}
+                style={[styles.cta, (busy || pin.length < 6 || (mode === "setup" && !setupCode.trim())) && { opacity: 0.5 }]}
               >
                 {busy ? (
                   <ActivityIndicator color={colors.onBrandPrimary} />
@@ -116,7 +150,7 @@ export default function PinScreen() {
               </Pressable>
               {mode === "setup" ? (
                 <Text style={styles.hint}>
-                  4–10 digits. You&apos;ll use this PIN whenever the app needs to re-authenticate.
+                  6–10 digits. You&apos;ll use this PIN whenever the app needs to re-authenticate.
                 </Text>
               ) : null}
             </>
@@ -146,6 +180,14 @@ const styles = StyleSheet.create({
     width: "70%", textAlign: "center",
     fontSize: 32, letterSpacing: 8, fontWeight: "700",
     paddingVertical: spacing.md,
+    color: colors.onSurface,
+  },
+  codeInput: {
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius.md,
+    width: "85%",
+    fontSize: 15, paddingHorizontal: spacing.md, paddingVertical: spacing.md,
     color: colors.onSurface,
   },
   cta: {

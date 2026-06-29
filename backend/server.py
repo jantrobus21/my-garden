@@ -37,8 +37,20 @@ EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 # ---- Auth config ----
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 SESSION_TTL_DAYS = 30
+MIN_PIN_LENGTH = 6
 MAX_PIN_ATTEMPTS = 5
-PIN_LOCK_SECONDS = 30
+# Escalating lockout in seconds, applied by failure cohort
+LOCKOUT_LADDER = [30, 5 * 60, 60 * 60, 24 * 60 * 60]  # 30s, 5m, 1h, 24h
+DOWNLOAD_TOKEN_TTL_SECONDS = 5 * 60
+
+# One-time setup code — required for the very first /auth/setup call.
+# If unset on a fresh deploy, setup is disabled.
+APP_SETUP_CODE = os.environ.get('APP_SETUP_CODE', '').strip()
+
+
+def _hash_token(token: str) -> str:
+    import hashlib
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -193,7 +205,11 @@ async def _next_plant_number() -> str:
 
 # ===== Auth =====
 class PinPayload(BaseModel):
-    pin: str = Field(..., min_length=4, max_length=10)
+    pin: str = Field(..., min_length=MIN_PIN_LENGTH, max_length=10)
+
+
+class SetupPayload(PinPayload):
+    setup_code: str = Field(..., min_length=4, max_length=128)
 
 
 class AuthOk(BaseModel):
@@ -205,13 +221,13 @@ async def _create_session() -> dict:
     now = datetime.now(timezone.utc)
     token = secrets.token_urlsafe(32)
     doc = {
-        "token": token,
+        "token_hash": _hash_token(token),
         "created_at": now,
         "expires_at": now + timedelta(days=SESSION_TTL_DAYS),
         "revoked": False,
     }
     await db.sessions.insert_one(doc)
-    return doc
+    return {"token": token, "expires_at": doc["expires_at"]}
 
 
 async def require_auth(request: Request) -> dict:
@@ -220,10 +236,8 @@ async def require_auth(request: Request) -> dict:
     if auth_header and auth_header.lower().startswith("bearer "):
         token = auth_header.split(" ", 1)[1].strip()
     if not token:
-        token = request.query_params.get("t")
-    if not token:
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization")
-    session = await db.sessions.find_one({"token": token, "revoked": False})
+    session = await db.sessions.find_one({"token_hash": _hash_token(token), "revoked": False})
     if not session:
         raise HTTPException(status_code=401, detail="Invalid or revoked session")
     expires_at = session.get("expires_at")
@@ -237,13 +251,21 @@ async def require_auth(request: Request) -> dict:
 @api_router.get("/health")
 async def health():
     admin = await db.admin.find_one({"_id": "admin"})
-    return {"status": "ok", "configured": admin is not None}
+    return {
+        "status": "ok",
+        "configured": admin is not None,
+        "setup_enabled": admin is None and bool(APP_SETUP_CODE),
+    }
 
 
 @api_router.post("/auth/setup", response_model=AuthOk)
-async def auth_setup(payload: PinPayload):
+async def auth_setup(payload: SetupPayload):
     if not payload.pin.isdigit():
         raise HTTPException(status_code=400, detail="PIN must be digits only")
+    if not APP_SETUP_CODE:
+        raise HTTPException(status_code=403, detail="Setup is disabled. Configure APP_SETUP_CODE on the server.")
+    if not secrets.compare_digest(payload.setup_code, APP_SETUP_CODE):
+        raise HTTPException(status_code=403, detail="Invalid setup code")
     existing = await db.admin.find_one({"_id": "admin"})
     if existing is not None:
         raise HTTPException(status_code=409, detail="Already configured. Use /auth/login.")
@@ -253,10 +275,18 @@ async def auth_setup(payload: PinPayload):
         "pin_hash": pin_hash,
         "created_at": datetime.now(timezone.utc),
         "failed_attempts": 0,
+        "total_failed": 0,
         "lock_until": None,
     })
     session = await _create_session()
     return AuthOk(token=session["token"], expires_at=session["expires_at"])
+
+
+def _lock_seconds_for(total_failed: int) -> int:
+    # Each MAX_PIN_ATTEMPTS-sized cohort escalates the lock window.
+    cohort = max(0, (total_failed // MAX_PIN_ATTEMPTS) - 1)
+    idx = min(cohort, len(LOCKOUT_LADDER) - 1)
+    return LOCKOUT_LADDER[idx]
 
 
 @api_router.post("/auth/login", response_model=AuthOk)
@@ -274,21 +304,34 @@ async def auth_login(payload: PinPayload):
         wait = int((lock_until - now).total_seconds()) + 1
         raise HTTPException(status_code=429, detail=f"Too many attempts. Try again in {wait}s.")
     if not pwd_context.verify(payload.pin, admin["pin_hash"]):
-        failed = (admin.get("failed_attempts") or 0) + 1
-        update = {"failed_attempts": failed}
+        # Atomic increment so concurrent attempts don't trample each other.
+        updated = await db.admin.find_one_and_update(
+            {"_id": "admin"},
+            {"$inc": {"failed_attempts": 1, "total_failed": 1}},
+            return_document=True,
+        )
+        failed = updated.get("failed_attempts", 0)
+        total = updated.get("total_failed", 0)
         if failed >= MAX_PIN_ATTEMPTS:
-            update["lock_until"] = now + timedelta(seconds=PIN_LOCK_SECONDS)
-            update["failed_attempts"] = 0
-        await db.admin.update_one({"_id": "admin"}, {"$set": update})
+            lock_seconds = _lock_seconds_for(total)
+            await db.admin.update_one(
+                {"_id": "admin"},
+                {"$set": {"lock_until": now + timedelta(seconds=lock_seconds), "failed_attempts": 0}},
+            )
         raise HTTPException(status_code=401, detail="Incorrect PIN")
-    await db.admin.update_one({"_id": "admin"}, {"$set": {"failed_attempts": 0, "lock_until": None}})
+    # Success: reset the current-window counter but keep total_failed (history).
+    await db.admin.update_one(
+        {"_id": "admin"},
+        {"$set": {"failed_attempts": 0, "lock_until": None}},
+    )
     session = await _create_session()
     return AuthOk(token=session["token"], expires_at=session["expires_at"])
 
 
 @api_router.post("/auth/logout")
 async def auth_logout(session: dict = Depends(require_auth)):
-    await db.sessions.update_one({"token": session["token"]}, {"$set": {"revoked": True}})
+    # Hard-delete on logout so revoked tokens can't be probed.
+    await db.sessions.delete_one({"token_hash": session["token_hash"]})
     return {"ok": True}
 
 
@@ -299,6 +342,51 @@ async def auth_me(session: dict = Depends(require_auth)):
 
 # Protected router for all data endpoints
 protected_router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
+
+
+# ===== Download tokens (short-lived) for label.html and tag.stl =====
+async def _issue_download_token(plant_id: str, kind: str) -> str:
+    token = secrets.token_urlsafe(24)
+    now = datetime.now(timezone.utc)
+    await db.download_tokens.insert_one({
+        "token_hash": _hash_token(token),
+        "plant_id": plant_id,
+        "kind": kind,  # "label" | "stl"
+        "created_at": now,
+        "expires_at": now + timedelta(seconds=DOWNLOAD_TOKEN_TTL_SECONDS),
+        "used": False,
+    })
+    return token
+
+
+async def _consume_download_token(token: str, plant_id: str, kind: str) -> bool:
+    if not token:
+        return False
+    res = await db.download_tokens.find_one_and_update(
+        {
+            "token_hash": _hash_token(token),
+            "plant_id": plant_id,
+            "kind": kind,
+            "used": False,
+            "expires_at": {"$gt": datetime.now(timezone.utc)},
+        },
+        {"$set": {"used": True, "used_at": datetime.now(timezone.utc)}},
+    )
+    return res is not None
+
+
+@protected_router.post("/plants/{plant_id}/share")
+async def issue_share_tokens(plant_id: str):
+    plant = await db.plants.find_one({"id": plant_id}, {"_id": 0, "id": 1})
+    if not plant:
+        raise HTTPException(status_code=404, detail="Plant not found")
+    label = await _issue_download_token(plant_id, "label")
+    stl = await _issue_download_token(plant_id, "stl")
+    return {
+        "label_url": f"/api/plants/{plant_id}/label.html?d={label}",
+        "stl_url": f"/api/plants/{plant_id}/tag.stl?d={stl}",
+        "expires_in": DOWNLOAD_TOKEN_TTL_SECONDS,
+    }
 
 
 # ===== Plant endpoints =====
@@ -642,8 +730,11 @@ def _qr_svg(data: str, size: int = 200) -> str:
     )
 
 
-@protected_router.get("/plants/{plant_id}/label.html", response_class=HTMLResponse)
-async def plant_label_html(plant_id: str):
+@api_router.get("/plants/{plant_id}/label.html", response_class=HTMLResponse)
+async def plant_label_html(plant_id: str, d: Optional[str] = None):
+    ok = await _consume_download_token(d or "", plant_id, "label")
+    if not ok:
+        raise HTTPException(status_code=401, detail="Invalid or expired download link")
     plant = await db.plants.find_one({"id": plant_id}, {"_id": 0})
     if not plant:
         raise HTTPException(status_code=404, detail="Plant not found")
@@ -815,8 +906,11 @@ def _build_tag_stl(name: str, number: str, qr_data: str) -> bytes:
     return buf.getvalue()
 
 
-@protected_router.get("/plants/{plant_id}/tag.stl")
-async def plant_tag_stl(plant_id: str):
+@api_router.get("/plants/{plant_id}/tag.stl")
+async def plant_tag_stl(plant_id: str, d: Optional[str] = None):
+    ok = await _consume_download_token(d or "", plant_id, "stl")
+    if not ok:
+        raise HTTPException(status_code=401, detail="Invalid or expired download link")
     plant = await db.plants.find_one({"id": plant_id}, {"_id": 0})
     if not plant:
         raise HTTPException(status_code=404, detail="Plant not found")
@@ -849,7 +943,7 @@ if not _cors_origins:
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins or ["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -865,8 +959,10 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def _startup():
     try:
-        await db.sessions.create_index("token", unique=True)
+        await db.sessions.create_index("token_hash", unique=True)
         await db.sessions.create_index("expires_at", expireAfterSeconds=0)
+        await db.download_tokens.create_index("token_hash", unique=True)
+        await db.download_tokens.create_index("expires_at", expireAfterSeconds=0)
     except Exception as e:
         logger.warning("Index init failed: %s", e)
 

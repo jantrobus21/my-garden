@@ -18,9 +18,11 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 
-import { api, API_BASE, getCachedToken, HealthAnalysis, Plant, Reading } from "@/src/api";
+import { api, HealthAnalysis, Plant, Reading } from "@/src/api";
 import { colors, radius, spacing, statusMeta } from "@/src/theme";
 import QrScannerModal from "@/src/components/QrScannerModal";
+
+const BASE_HOST = process.env.EXPO_PUBLIC_BACKEND_URL || "";
 
 const FALLBACK_IMG = "https://images.unsplash.com/photo-1614594975525-e45190c55d0b?crop=entropy&cs=srgb&fm=jpg&w=900&q=80";
 
@@ -230,12 +232,13 @@ export default function PlantDetail() {
             <Pressable
               testID="print-label-button"
               onPress={async () => {
-                const t = getCachedToken();
-                const url = `${API_BASE}/plants/${plant.id}/label.html?t=${encodeURIComponent(t || "")}`;
-                if (Platform.OS === "web") {
-                  window.open(url, "_blank");
-                } else {
-                  await WebBrowser.openBrowserAsync(url);
+                try {
+                  const share = await api.sharePlant(plant.id);
+                  const url = `${BASE_HOST}${share.label_url}`;
+                  if (Platform.OS === "web") window.open(url, "_blank");
+                  else await WebBrowser.openBrowserAsync(url);
+                } catch (e) {
+                  console.warn("share failed", e);
                 }
               }}
               style={[styles.tagActionBtn, styles.tagActionPrimary]}
@@ -246,12 +249,13 @@ export default function PlantDetail() {
             <Pressable
               testID="download-stl-button"
               onPress={async () => {
-                const t = getCachedToken();
-                const url = `${API_BASE}/plants/${plant.id}/tag.stl?t=${encodeURIComponent(t || "")}`;
-                if (Platform.OS === "web") {
-                  window.open(url, "_blank");
-                } else {
-                  await Linking.openURL(url);
+                try {
+                  const share = await api.sharePlant(plant.id);
+                  const url = `${BASE_HOST}${share.stl_url}`;
+                  if (Platform.OS === "web") window.open(url, "_blank");
+                  else await Linking.openURL(url);
+                } catch (e) {
+                  console.warn("share failed", e);
                 }
               }}
               style={[styles.tagActionBtn, styles.tagActionSecondary]}

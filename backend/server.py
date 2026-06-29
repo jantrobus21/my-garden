@@ -959,6 +959,13 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def _startup():
     try:
+        # Drop legacy indexes from earlier schema (plain 'token' field) so the
+        # new token_hash schema doesn't collide.
+        existing = await db.sessions.index_information()
+        for legacy in ("token_1",):
+            if legacy in existing:
+                await db.sessions.drop_index(legacy)
+                logger.info("Dropped legacy index: %s", legacy)
         await db.sessions.create_index("token_hash", unique=True)
         await db.sessions.create_index("expires_at", expireAfterSeconds=0)
         await db.download_tokens.create_index("token_hash", unique=True)

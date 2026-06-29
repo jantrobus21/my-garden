@@ -18,7 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Linking from "expo-linking";
 import * as WebBrowser from "expo-web-browser";
 
-import { api, API_BASE, HealthAnalysis, Plant, Reading } from "@/src/api";
+import { api, API_BASE, getCachedToken, HealthAnalysis, Plant, Reading } from "@/src/api";
 import { colors, radius, spacing, statusMeta } from "@/src/theme";
 import QrScannerModal from "@/src/components/QrScannerModal";
 
@@ -230,9 +230,9 @@ export default function PlantDetail() {
             <Pressable
               testID="print-label-button"
               onPress={async () => {
-                const url = `${API_BASE}/plants/${plant.id}/label.html`;
+                const t = getCachedToken();
+                const url = `${API_BASE}/plants/${plant.id}/label.html?t=${encodeURIComponent(t || "")}`;
                 if (Platform.OS === "web") {
-                  // open in new tab so user can print
                   window.open(url, "_blank");
                 } else {
                   await WebBrowser.openBrowserAsync(url);
@@ -246,7 +246,8 @@ export default function PlantDetail() {
             <Pressable
               testID="download-stl-button"
               onPress={async () => {
-                const url = `${API_BASE}/plants/${plant.id}/tag.stl`;
+                const t = getCachedToken();
+                const url = `${API_BASE}/plants/${plant.id}/tag.stl?t=${encodeURIComponent(t || "")}`;
                 if (Platform.OS === "web") {
                   window.open(url, "_blank");
                 } else {

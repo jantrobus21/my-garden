@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request
 from fastapi.responses import HTMLResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -6,18 +6,21 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import io
 import json
+import html as html_lib
 import re
+import secrets
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import qrcode
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from stl import mesh as stl_mesh
+from passlib.context import CryptContext
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 
@@ -31,6 +34,12 @@ db = client[os.environ['DB_NAME']]
 
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
 
+# ---- Auth config ----
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+SESSION_TTL_DAYS = 30
+MAX_PIN_ATTEMPTS = 5
+PIN_LOCK_SECONDS = 30
+
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
@@ -38,35 +47,35 @@ api_router = APIRouter(prefix="/api")
 # ===== Models =====
 class Plant(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    species: Optional[str] = ""
-    location: Optional[str] = ""
-    photo_base64: Optional[str] = ""
-    plant_number: Optional[str] = ""
-    qr_code: Optional[str] = ""
+    name: str = Field(..., max_length=120)
+    species: Optional[str] = Field("", max_length=120)
+    location: Optional[str] = Field("", max_length=120)
+    photo_base64: Optional[str] = Field("", max_length=8_000_000)
+    plant_number: Optional[str] = Field("", max_length=12)
+    qr_code: Optional[str] = Field("", max_length=128)
     status: str = "healthy"  # healthy | thirsty | needs_fertilizer | issue
-    latest_summary: Optional[str] = ""
+    latest_summary: Optional[str] = Field("", max_length=240)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class PlantCreate(BaseModel):
-    name: str
-    species: Optional[str] = ""
-    location: Optional[str] = ""
-    photo_base64: Optional[str] = ""
-    plant_number: Optional[str] = ""
-    qr_code: Optional[str] = ""
+    name: str = Field(..., max_length=120)
+    species: Optional[str] = Field("", max_length=120)
+    location: Optional[str] = Field("", max_length=120)
+    photo_base64: Optional[str] = Field("", max_length=8_000_000)
+    plant_number: Optional[str] = Field("", max_length=12)
+    qr_code: Optional[str] = Field("", max_length=128)
 
 
 class PlantUpdate(BaseModel):
-    name: Optional[str] = None
-    species: Optional[str] = None
-    location: Optional[str] = None
-    photo_base64: Optional[str] = None
-    plant_number: Optional[str] = None
-    qr_code: Optional[str] = None
+    name: Optional[str] = Field(None, max_length=120)
+    species: Optional[str] = Field(None, max_length=120)
+    location: Optional[str] = Field(None, max_length=120)
+    photo_base64: Optional[str] = Field(None, max_length=8_000_000)
+    plant_number: Optional[str] = Field(None, max_length=12)
+    qr_code: Optional[str] = Field(None, max_length=128)
     status: Optional[str] = None
-    latest_summary: Optional[str] = None
+    latest_summary: Optional[str] = Field(None, max_length=240)
 
 
 class Reading(BaseModel):
@@ -105,7 +114,7 @@ class HealthAnalysis(BaseModel):
 
 
 class AnalyzeImageRequest(BaseModel):
-    image_base64: str
+    image_base64: str = Field(..., max_length=8_000_000)  # ~6 MB decoded
     plant_id: Optional[str] = None
 
 
@@ -182,18 +191,128 @@ async def _next_plant_number() -> str:
     return f"P{n:04d}" if n < 10000 else f"P{n}"
 
 
+# ===== Auth =====
+class PinPayload(BaseModel):
+    pin: str = Field(..., min_length=4, max_length=10)
+
+
+class AuthOk(BaseModel):
+    token: str
+    expires_at: datetime
+
+
+async def _create_session() -> dict:
+    now = datetime.now(timezone.utc)
+    token = secrets.token_urlsafe(32)
+    doc = {
+        "token": token,
+        "created_at": now,
+        "expires_at": now + timedelta(days=SESSION_TTL_DAYS),
+        "revoked": False,
+    }
+    await db.sessions.insert_one(doc)
+    return doc
+
+
+async def require_auth(request: Request) -> dict:
+    auth_header = request.headers.get("authorization") or request.headers.get("Authorization")
+    token: Optional[str] = None
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    if not token:
+        token = request.query_params.get("t")
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization")
+    session = await db.sessions.find_one({"token": token, "revoked": False})
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid or revoked session")
+    expires_at = session.get("expires_at")
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at and datetime.now(timezone.utc) >= expires_at:
+        raise HTTPException(status_code=401, detail="Session expired")
+    return session
+
+
+@api_router.get("/health")
+async def health():
+    admin = await db.admin.find_one({"_id": "admin"})
+    return {"status": "ok", "configured": admin is not None}
+
+
+@api_router.post("/auth/setup", response_model=AuthOk)
+async def auth_setup(payload: PinPayload):
+    if not payload.pin.isdigit():
+        raise HTTPException(status_code=400, detail="PIN must be digits only")
+    existing = await db.admin.find_one({"_id": "admin"})
+    if existing is not None:
+        raise HTTPException(status_code=409, detail="Already configured. Use /auth/login.")
+    pin_hash = pwd_context.hash(payload.pin)
+    await db.admin.insert_one({
+        "_id": "admin",
+        "pin_hash": pin_hash,
+        "created_at": datetime.now(timezone.utc),
+        "failed_attempts": 0,
+        "lock_until": None,
+    })
+    session = await _create_session()
+    return AuthOk(token=session["token"], expires_at=session["expires_at"])
+
+
+@api_router.post("/auth/login", response_model=AuthOk)
+async def auth_login(payload: PinPayload):
+    if not payload.pin.isdigit():
+        raise HTTPException(status_code=400, detail="PIN must be digits only")
+    admin = await db.admin.find_one({"_id": "admin"})
+    if not admin:
+        raise HTTPException(status_code=400, detail="Not configured. Set up a PIN first.")
+    now = datetime.now(timezone.utc)
+    lock_until = admin.get("lock_until")
+    if lock_until and lock_until.tzinfo is None:
+        lock_until = lock_until.replace(tzinfo=timezone.utc)
+    if lock_until and now < lock_until:
+        wait = int((lock_until - now).total_seconds()) + 1
+        raise HTTPException(status_code=429, detail=f"Too many attempts. Try again in {wait}s.")
+    if not pwd_context.verify(payload.pin, admin["pin_hash"]):
+        failed = (admin.get("failed_attempts") or 0) + 1
+        update = {"failed_attempts": failed}
+        if failed >= MAX_PIN_ATTEMPTS:
+            update["lock_until"] = now + timedelta(seconds=PIN_LOCK_SECONDS)
+            update["failed_attempts"] = 0
+        await db.admin.update_one({"_id": "admin"}, {"$set": update})
+        raise HTTPException(status_code=401, detail="Incorrect PIN")
+    await db.admin.update_one({"_id": "admin"}, {"$set": {"failed_attempts": 0, "lock_until": None}})
+    session = await _create_session()
+    return AuthOk(token=session["token"], expires_at=session["expires_at"])
+
+
+@api_router.post("/auth/logout")
+async def auth_logout(session: dict = Depends(require_auth)):
+    await db.sessions.update_one({"token": session["token"]}, {"$set": {"revoked": True}})
+    return {"ok": True}
+
+
+@api_router.get("/auth/me")
+async def auth_me(session: dict = Depends(require_auth)):
+    return {"ok": True}
+
+
+# Protected router for all data endpoints
+protected_router = APIRouter(prefix="/api", dependencies=[Depends(require_auth)])
+
+
 # ===== Plant endpoints =====
-@api_router.get("/")
+@protected_router.get("/")
 async def root():
     return {"message": "BotanIQ API running"}
 
 
-@api_router.get("/plants/next-number")
+@protected_router.get("/plants/next-number")
 async def get_next_plant_number():
     return {"plant_number": await _next_plant_number()}
 
 
-@api_router.post("/plants", response_model=Plant)
+@protected_router.post("/plants", response_model=Plant)
 async def create_plant(payload: PlantCreate):
     plant = Plant(**payload.model_dump())
     # plant_number
@@ -222,13 +341,13 @@ async def create_plant(payload: PlantCreate):
     return plant
 
 
-@api_router.get("/plants", response_model=List[Plant])
+@protected_router.get("/plants", response_model=List[Plant])
 async def list_plants():
     docs = await db.plants.find({}, {"_id": 0}).sort("created_at", -1).to_list(1000)
     return [Plant(**d) for d in docs]
 
 
-@api_router.get("/plants/{plant_id}", response_model=Plant)
+@protected_router.get("/plants/{plant_id}", response_model=Plant)
 async def get_plant(plant_id: str):
     doc = await db.plants.find_one({"id": plant_id}, {"_id": 0})
     if not doc:
@@ -236,7 +355,7 @@ async def get_plant(plant_id: str):
     return Plant(**doc)
 
 
-@api_router.get("/plants/qr/{qr_code}", response_model=Plant)
+@protected_router.get("/plants/qr/{qr_code}", response_model=Plant)
 async def get_plant_by_qr(qr_code: str):
     doc = await db.plants.find_one({"qr_code": qr_code}, {"_id": 0})
     if not doc:
@@ -244,7 +363,7 @@ async def get_plant_by_qr(qr_code: str):
     return Plant(**doc)
 
 
-@api_router.patch("/plants/{plant_id}", response_model=Plant)
+@protected_router.patch("/plants/{plant_id}", response_model=Plant)
 async def update_plant(plant_id: str, payload: PlantUpdate):
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
     if "plant_number" in updates:
@@ -279,7 +398,7 @@ async def update_plant(plant_id: str, payload: PlantUpdate):
     return Plant(**doc)
 
 
-@api_router.delete("/plants/{plant_id}")
+@protected_router.delete("/plants/{plant_id}")
 async def delete_plant(plant_id: str):
     res = await db.plants.delete_one({"id": plant_id})
     if res.deleted_count == 0:
@@ -290,7 +409,7 @@ async def delete_plant(plant_id: str):
 
 
 # ===== Readings =====
-@api_router.post("/readings", response_model=Reading)
+@protected_router.post("/readings", response_model=Reading)
 async def create_reading(payload: ReadingCreate):
     plant = await db.plants.find_one({"id": payload.plant_id})
     if not plant:
@@ -321,20 +440,20 @@ async def create_reading(payload: ReadingCreate):
     return reading
 
 
-@api_router.get("/plants/{plant_id}/readings", response_model=List[Reading])
+@protected_router.get("/plants/{plant_id}/readings", response_model=List[Reading])
 async def list_readings(plant_id: str):
     docs = await db.readings.find({"plant_id": plant_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [Reading(**d) for d in docs]
 
 
-@api_router.get("/plants/{plant_id}/analyses", response_model=List[HealthAnalysis])
+@protected_router.get("/plants/{plant_id}/analyses", response_model=List[HealthAnalysis])
 async def list_analyses(plant_id: str):
     docs = await db.analyses.find({"plant_id": plant_id}, {"_id": 0}).sort("created_at", -1).to_list(500)
     return [HealthAnalysis(**d) for d in docs]
 
 
 # ===== AI: Analyze meter =====
-@api_router.post("/analyze/meter")
+@protected_router.post("/analyze/meter")
 async def analyze_meter(payload: AnalyzeImageRequest):
     system = (
         "You are an expert at reading soil meters and plant sensors. "
@@ -353,9 +472,9 @@ async def analyze_meter(payload: AnalyzeImageRequest):
     )
     try:
         raw = await _llm_vision(prompt, payload.image_base64, system)
-    except Exception as e:
+    except Exception:
         logger.exception("meter analyze failed")
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {e}")
+        raise HTTPException(status_code=502, detail="AI service unavailable. Try again shortly.")
 
     data = _extract_json(raw)
 
@@ -391,7 +510,7 @@ async def analyze_meter(payload: AnalyzeImageRequest):
 
 
 # ===== AI: Analyze plant health =====
-@api_router.post("/analyze/health")
+@protected_router.post("/analyze/health")
 async def analyze_health(payload: AnalyzeImageRequest):
     system = (
         "You are a professional botanist analysing houseplants from photos. "
@@ -413,9 +532,9 @@ async def analyze_health(payload: AnalyzeImageRequest):
     )
     try:
         raw = await _llm_vision(prompt, payload.image_base64, system)
-    except Exception as e:
+    except Exception:
         logger.exception("health analyze failed")
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {e}")
+        raise HTTPException(status_code=502, detail="AI service unavailable. Try again shortly.")
 
     data = _extract_json(raw)
     status = data.get("status") or "healthy"
@@ -444,7 +563,7 @@ async def analyze_health(payload: AnalyzeImageRequest):
 
 
 # ===== AI: Identify plant species =====
-@api_router.post("/analyze/identify")
+@protected_router.post("/analyze/identify")
 async def analyze_identify(payload: AnalyzeImageRequest):
     system = (
         "You are a professional botanist. Identify houseplants from photos. "
@@ -463,9 +582,9 @@ async def analyze_identify(payload: AnalyzeImageRequest):
     )
     try:
         raw = await _llm_vision(prompt, payload.image_base64, system)
-    except Exception as e:
+    except Exception:
         logger.exception("identify failed")
-        raise HTTPException(status_code=502, detail=f"AI identify failed: {e}")
+        raise HTTPException(status_code=502, detail="AI service unavailable. Try again shortly.")
 
     data = _extract_json(raw)
     return {
@@ -477,7 +596,7 @@ async def analyze_identify(payload: AnalyzeImageRequest):
 
 
 # ===== Dashboard summary =====
-@api_router.get("/summary")
+@protected_router.get("/summary")
 async def summary():
     plants = await db.plants.find({}, {"_id": 0}).to_list(1000)
     needs_water = sum(1 for p in plants if p.get("status") == "thirsty")
@@ -523,16 +642,16 @@ def _qr_svg(data: str, size: int = 200) -> str:
     )
 
 
-@api_router.get("/plants/{plant_id}/label.html", response_class=HTMLResponse)
+@protected_router.get("/plants/{plant_id}/label.html", response_class=HTMLResponse)
 async def plant_label_html(plant_id: str):
     plant = await db.plants.find_one({"id": plant_id}, {"_id": 0})
     if not plant:
         raise HTTPException(status_code=404, detail="Plant not found")
     qr_data = plant.get("qr_code") or plant_id
     svg = _qr_svg(qr_data, size=220)
-    name = (plant.get("name") or "Plant").replace("<", "&lt;")
-    species = (plant.get("species") or "").replace("<", "&lt;")
-    number = plant.get("plant_number") or ""
+    name = html_lib.escape(plant.get("name") or "Plant")
+    species = html_lib.escape(plant.get("species") or "")
+    number = html_lib.escape(plant.get("plant_number") or "")
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>{name} — label</title>
 <style>
@@ -696,7 +815,7 @@ def _build_tag_stl(name: str, number: str, qr_data: str) -> bytes:
     return buf.getvalue()
 
 
-@api_router.get("/plants/{plant_id}/tag.stl")
+@protected_router.get("/plants/{plant_id}/tag.stl")
 async def plant_tag_stl(plant_id: str):
     plant = await db.plants.find_one({"id": plant_id}, {"_id": 0})
     if not plant:
@@ -704,18 +823,34 @@ async def plant_tag_stl(plant_id: str):
     qr_data = plant.get("qr_code") or plant_id
     name = plant.get("name") or "Plant"
     number = plant.get("plant_number") or ""
-    stl_bytes = _build_tag_stl(name=name, number=number, qr_data=qr_data)
+    try:
+        stl_bytes = _build_tag_stl(name=name, number=number, qr_data=qr_data)
+    except Exception:
+        logger.exception("STL build failed")
+        raise HTTPException(status_code=500, detail="Could not generate STL for this plant.")
     safe = re.sub(r"[^A-Za-z0-9_-]+", "_", f"{number or 'plant'}_{name}")[:40] or "plant_tag"
     headers = {"Content-Disposition": f'attachment; filename="{safe}.stl"'}
     return Response(content=stl_bytes, media_type="model/stl", headers=headers)
 
 
 app.include_router(api_router)
+app.include_router(protected_router)
+
+# Build CORS allowlist from envs; use safe default if not provided.
+_cors_env = os.environ.get("APP_CORS_ORIGINS", "")
+_cors_origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+if not _cors_origins:
+    # Preview/prod URL is configured in frontend .env; mirror it here.
+    _proxy = os.environ.get("EXPO_PACKAGER_PROXY_URL", "")
+    if _proxy:
+        _cors_origins.append(_proxy.rstrip("/"))
+    # Allow Expo dev tooling on localhost
+    _cors_origins.extend(["http://localhost:19006", "http://localhost:8081"])
 
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=["*"],
+    allow_origins=_cors_origins or ["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -725,6 +860,15 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+@app.on_event("startup")
+async def _startup():
+    try:
+        await db.sessions.create_index("token", unique=True)
+        await db.sessions.create_index("expires_at", expireAfterSeconds=0)
+    except Exception as e:
+        logger.warning("Index init failed: %s", e)
 
 
 @app.on_event("shutdown")

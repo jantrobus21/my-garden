@@ -1,3 +1,5 @@
+import { storage } from "@/src/utils/storage";
+
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 if (!BASE) {
@@ -5,6 +7,35 @@ if (!BASE) {
 }
 
 export const API_BASE = `${BASE}/api`;
+
+const TOKEN_KEY = "botaniq_session_token";
+
+let cachedToken: string | null = null;
+let onAuthFail: (() => void) | null = null;
+
+export function setAuthFailHandler(handler: (() => void) | null) {
+  onAuthFail = handler;
+}
+
+export async function loadToken(): Promise<string | null> {
+  const t = await storage.secureGet<string>(TOKEN_KEY, "" as any);
+  cachedToken = t || null;
+  return cachedToken;
+}
+
+export async function saveToken(token: string) {
+  cachedToken = token;
+  await storage.secureSet(TOKEN_KEY, token);
+}
+
+export async function clearToken() {
+  cachedToken = null;
+  await storage.secureRemove(TOKEN_KEY);
+}
+
+export function getCachedToken() {
+  return cachedToken;
+}
 
 export type Plant = {
   id: string;
@@ -43,11 +74,19 @@ export type HealthAnalysis = {
   created_at: string;
 };
 
-async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
-  });
+async function req<T>(path: string, init?: RequestInit, opts?: { skipAuth?: boolean }): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (!opts?.skipAuth && cachedToken) {
+    headers.Authorization = `Bearer ${cachedToken}`;
+  }
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers });
+  if (res.status === 401 && !opts?.skipAuth) {
+    await clearToken();
+    if (onAuthFail) onAuthFail();
+  }
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`${res.status}: ${text}`);
@@ -56,6 +95,21 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  // auth (skip token)
+  health: () =>
+    req<{ status: string; configured: boolean }>("/health", undefined, { skipAuth: true }),
+  setupPin: (pin: string) =>
+    req<{ token: string; expires_at: string }>("/auth/setup", {
+      method: "POST",
+      body: JSON.stringify({ pin }),
+    }, { skipAuth: true }),
+  loginPin: (pin: string) =>
+    req<{ token: string; expires_at: string }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ pin }),
+    }, { skipAuth: true }),
+  logout: () => req<{ ok: boolean }>("/auth/logout", { method: "POST" }),
+
   listPlants: () => req<Plant[]>("/plants"),
   nextPlantNumber: () => req<{ plant_number: string }>("/plants/next-number"),
   getPlant: (id: string) => req<Plant>(`/plants/${id}`),

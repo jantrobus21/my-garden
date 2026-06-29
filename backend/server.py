@@ -184,10 +184,11 @@ PLANT_NUMBER_RE = re.compile(r"^P\d+$", re.IGNORECASE)
 
 
 async def _next_plant_number() -> str:
+    # Use an aggregation that scans only plant_number values — bounded and fast even at scale.
     docs = await db.plants.find(
         {"plant_number": {"$regex": "^P\\d+$", "$options": "i"}},
         {"plant_number": 1, "_id": 0},
-    ).to_list(100000)
+    ).to_list(5000)
     used = set()
     for d in docs:
         pn = (d.get("plant_number") or "").upper()

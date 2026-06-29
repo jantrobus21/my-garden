@@ -144,7 +144,7 @@ export default function ScanHub() {
             ) : null}
           </View>
         )}
-        <View style={styles.viewfinderFrame} pointerEvents="none" />
+        <View style={styles.viewfinderFrame} />
       </View>
 
       {mode !== "qr" ? (
@@ -242,6 +242,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: "rgba(255,255,255,0.4)",
     borderRadius: radius.md,
+    pointerEvents: "none",
   },
   permBtn: {
     marginTop: spacing.sm,

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,10 +13,12 @@ import {
 import { Image } from "expo-image";
 import { LinearGradient } from "expo-linear-gradient";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
+import * as Linking from "expo-linking";
+import * as WebBrowser from "expo-web-browser";
 
-import { api, HealthAnalysis, Plant, Reading } from "@/src/api";
+import { api, API_BASE, HealthAnalysis, Plant, Reading } from "@/src/api";
 import { colors, radius, spacing, statusMeta } from "@/src/theme";
 import QrScannerModal from "@/src/components/QrScannerModal";
 
@@ -57,6 +60,12 @@ export default function PlantDetail() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
   if (loading || !plant) {
     return (
@@ -130,9 +139,18 @@ export default function PlantDetail() {
             <Pressable testID="back-button" onPress={() => router.back()} style={styles.iconBtn}>
               <Ionicons name="chevron-back" size={22} color={colors.onSurfaceInverse} />
             </Pressable>
-            <Pressable testID="delete-plant-button" onPress={handleDelete} style={styles.iconBtn}>
-              <Ionicons name="trash-outline" size={20} color={colors.onSurfaceInverse} />
-            </Pressable>
+            <View style={{ flexDirection: "row", gap: 8 }}>
+              <Pressable
+                testID="edit-plant-button"
+                onPress={() => router.push(`/edit-plant/${plant.id}`)}
+                style={styles.iconBtn}
+              >
+                <Ionicons name="create-outline" size={20} color={colors.onSurfaceInverse} />
+              </Pressable>
+              <Pressable testID="delete-plant-button" onPress={handleDelete} style={styles.iconBtn}>
+                <Ionicons name="trash-outline" size={20} color={colors.onSurfaceInverse} />
+              </Pressable>
+            </View>
           </View>
           <View style={styles.heroBottom}>
             <View style={[styles.statusChip, { backgroundColor: meta.bg }]}>
@@ -207,6 +225,40 @@ export default function PlantDetail() {
               <Ionicons name="qr-code" size={36} color={colors.brandPrimary} />
             </Pressable>
           )}
+
+          <View style={styles.tagActions}>
+            <Pressable
+              testID="print-label-button"
+              onPress={async () => {
+                const url = `${API_BASE}/plants/${plant.id}/label.html`;
+                if (Platform.OS === "web") {
+                  // open in new tab so user can print
+                  window.open(url, "_blank");
+                } else {
+                  await WebBrowser.openBrowserAsync(url);
+                }
+              }}
+              style={[styles.tagActionBtn, styles.tagActionPrimary]}
+            >
+              <Ionicons name="print-outline" size={16} color={colors.onBrandPrimary} />
+              <Text style={styles.tagActionPrimaryText}>Print sticker</Text>
+            </Pressable>
+            <Pressable
+              testID="download-stl-button"
+              onPress={async () => {
+                const url = `${API_BASE}/plants/${plant.id}/tag.stl`;
+                if (Platform.OS === "web") {
+                  window.open(url, "_blank");
+                } else {
+                  await Linking.openURL(url);
+                }
+              }}
+              style={[styles.tagActionBtn, styles.tagActionSecondary]}
+            >
+              <Ionicons name="cube-outline" size={16} color={colors.onBrandSecondary} />
+              <Text style={styles.tagActionSecondaryText}>Download STL</Text>
+            </Pressable>
+          </View>
 
           <Text style={styles.sectionTitle}>Latest Readings</Text>
           <View style={styles.metricGrid}>
@@ -363,6 +415,15 @@ const styles = StyleSheet.create({
   qrActionGhostText: { color: colors.onSurface, fontWeight: "700" },
   qrActionPrimary: { backgroundColor: colors.brandPrimary },
   qrActionPrimaryText: { color: colors.onBrandPrimary, fontWeight: "700" },
+  tagActions: { flexDirection: "row", gap: spacing.sm },
+  tagActionBtn: {
+    flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    paddingVertical: spacing.md, borderRadius: radius.pill,
+  },
+  tagActionPrimary: { backgroundColor: colors.brandPrimary },
+  tagActionPrimaryText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 13 },
+  tagActionSecondary: { backgroundColor: colors.brandSecondary },
+  tagActionSecondaryText: { color: colors.onBrandSecondary, fontWeight: "700", fontSize: 13 },
 
   sectionTitle: { fontSize: 18, fontWeight: "700", color: colors.onSurface, marginTop: spacing.sm },
   metricGrid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },

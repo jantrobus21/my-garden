@@ -30,6 +30,7 @@ export default function RootLayout() {
         <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#F9FAF7" } }}>
           <Stack.Screen name="(tabs)" />
           <Stack.Screen name="add-plant" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
+          <Stack.Screen name="edit-plant/[id]" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
           <Stack.Screen name="scan-result" options={{ presentation: "modal", animation: "slide_from_bottom" }} />
           <Stack.Screen name="plant/[id]" />
         </Stack>

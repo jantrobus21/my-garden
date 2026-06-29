@@ -85,6 +85,11 @@ export default function AddPlant() {
       setError("Please enter a name");
       return;
     }
+    const pn = plantNumber.trim().toUpperCase();
+    if (pn && !/^P\d+$/.test(pn)) {
+      setError("Plant ID must be P followed by digits (e.g. P0001)");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
@@ -92,13 +97,17 @@ export default function AddPlant() {
         name: name.trim(),
         species: species.trim(),
         location: location.trim(),
+        plant_number: pn,
         qr_code: qrCode.trim(),
         photo_base64: photoB64 || "",
       });
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace(`/plant/${plant.id}`);
     } catch (e: any) {
-      setError(e?.message || "Could not save plant");
+      const msg = String(e?.message || "");
+      if (msg.includes("409")) setError("That Plant ID or QR code is already in use.");
+      else if (msg.includes("400")) setError("Plant ID must be P followed by digits (e.g. P0001).");
+      else setError("Could not save plant");
     } finally {
       setSaving(false);
     }
@@ -169,18 +178,18 @@ export default function AddPlant() {
           <View style={{ gap: 6 }}>
             <Text style={styles.label}>Plant ID</Text>
             <Text style={styles.helper}>
-              Your own numbering, format P followed by 4 digits (e.g. P0001). Leave blank to use the next available number.
+              Your own numbering — P followed by digits (e.g. P0001 or P12345). Leave blank to use the next available number.
             </Text>
             <View style={styles.qrRow}>
               <TextInput
                 testID="input-plant-number"
                 value={plantNumber}
-                onChangeText={(t) => setPlantNumber(t.toUpperCase().slice(0, 5))}
+                onChangeText={(t) => setPlantNumber(t.toUpperCase().slice(0, 12))}
                 placeholder={suggestedNumber || "P0001"}
                 placeholderTextColor="#8a988c"
                 autoCapitalize="characters"
                 autoCorrect={false}
-                maxLength={5}
+                maxLength={12}
                 style={[styles.input, { flex: 1, letterSpacing: 1 }]}
               />
               {suggestedNumber ? (

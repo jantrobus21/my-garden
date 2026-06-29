@@ -1,8 +1,10 @@
 from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi.responses import HTMLResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
+import io
 import json
 import re
 import logging
@@ -11,6 +13,11 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 import uuid
 from datetime import datetime, timezone
+
+import qrcode
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+from stl import mesh as stl_mesh
 
 from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
 
@@ -152,11 +159,14 @@ async def _llm_vision(prompt: str, image_b64: str, system: str) -> str:
     return str(result)
 
 
-PLANT_NUMBER_RE = re.compile(r"^P\d{4}$", re.IGNORECASE)
+PLANT_NUMBER_RE = re.compile(r"^P\d+$", re.IGNORECASE)
 
 
 async def _next_plant_number() -> str:
-    docs = await db.plants.find({"plant_number": {"$regex": "^P\\d{4}$", "$options": "i"}}, {"plant_number": 1, "_id": 0}).to_list(10000)
+    docs = await db.plants.find(
+        {"plant_number": {"$regex": "^P\\d+$", "$options": "i"}},
+        {"plant_number": 1, "_id": 0},
+    ).to_list(100000)
     used = set()
     for d in docs:
         pn = (d.get("plant_number") or "").upper()
@@ -168,7 +178,8 @@ async def _next_plant_number() -> str:
     n = 1
     while n in used:
         n += 1
-    return f"P{n:04d}"
+    # zero-pad to at least 4 digits for readability
+    return f"P{n:04d}" if n < 10000 else f"P{n}"
 
 
 # ===== Plant endpoints =====
@@ -189,7 +200,7 @@ async def create_plant(payload: PlantCreate):
     if plant.plant_number:
         plant.plant_number = plant.plant_number.strip().upper()
         if not PLANT_NUMBER_RE.match(plant.plant_number):
-            raise HTTPException(status_code=400, detail="Plant ID must be P followed by 4 digits, e.g. P0001")
+            raise HTTPException(status_code=400, detail="Plant ID must be P followed by digits, e.g. P0001")
         clash = await db.plants.find_one({"plant_number": plant.plant_number})
         if clash:
             raise HTTPException(status_code=409, detail=f"Plant ID '{plant.plant_number}' is already in use.")
@@ -239,7 +250,7 @@ async def update_plant(plant_id: str, payload: PlantUpdate):
     if "plant_number" in updates:
         updates["plant_number"] = updates["plant_number"].strip().upper()
         if updates["plant_number"] and not PLANT_NUMBER_RE.match(updates["plant_number"]):
-            raise HTTPException(status_code=400, detail="Plant ID must be P followed by 4 digits, e.g. P0001")
+            raise HTTPException(status_code=400, detail="Plant ID must be P followed by digits, e.g. P0001")
         if updates["plant_number"]:
             clash = await db.plants.find_one({"plant_number": updates["plant_number"], "id": {"$ne": plant_id}})
             if clash:
@@ -480,6 +491,223 @@ async def summary():
         "issues": issues,
         "healthy": healthy,
     }
+
+
+# ===== Label / sticker / STL =====
+def _qr_matrix(data: str) -> np.ndarray:
+    qr = qrcode.QRCode(border=0, box_size=1, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    qr.add_data(data or "")
+    qr.make(fit=True)
+    matrix = qr.get_matrix()
+    return np.array(matrix, dtype=bool)
+
+
+def _qr_svg(data: str, size: int = 200) -> str:
+    matrix = _qr_matrix(data)
+    n = matrix.shape[0]
+    cell = size / n
+    rects = []
+    for y in range(n):
+        for x in range(n):
+            if matrix[y, x]:
+                rects.append(
+                    f'<rect x="{x * cell:.3f}" y="{y * cell:.3f}" '
+                    f'width="{cell:.3f}" height="{cell:.3f}" fill="#1A211C"/>'
+                )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" '
+        f'viewBox="0 0 {size} {size}" shape-rendering="crispEdges">'
+        f'<rect width="{size}" height="{size}" fill="#fff"/>'
+        + "".join(rects)
+        + "</svg>"
+    )
+
+
+@api_router.get("/plants/{plant_id}/label.html", response_class=HTMLResponse)
+async def plant_label_html(plant_id: str):
+    plant = await db.plants.find_one({"id": plant_id}, {"_id": 0})
+    if not plant:
+        raise HTTPException(status_code=404, detail="Plant not found")
+    qr_data = plant.get("qr_code") or plant_id
+    svg = _qr_svg(qr_data, size=220)
+    name = (plant.get("name") or "Plant").replace("<", "&lt;")
+    species = (plant.get("species") or "").replace("<", "&lt;")
+    number = plant.get("plant_number") or ""
+    html = f"""<!doctype html>
+<html><head><meta charset="utf-8"><title>{name} — label</title>
+<style>
+  @page {{ size: 80mm 50mm; margin: 0; }}
+  body {{ margin: 0; font-family: -apple-system, system-ui, sans-serif; background: #f4f4f1; padding: 24px; }}
+  .label {{ width: 80mm; height: 50mm; background: #fff; border: 2px solid #3C6E4A; border-radius: 6mm;
+    display: flex; padding: 4mm; box-sizing: border-box; align-items: center; gap: 4mm; margin: 0 auto;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.08); }}
+  .qr {{ flex: 0 0 42mm; height: 42mm; display: flex; align-items: center; justify-content: center; }}
+  .qr svg {{ width: 100%; height: 100%; }}
+  .info {{ flex: 1; min-width: 0; }}
+  .num {{ font-size: 14pt; font-weight: 700; letter-spacing: 2px; color: #3C6E4A; text-transform: uppercase; }}
+  .name {{ font-size: 14pt; font-weight: 700; color: #1A211C; line-height: 1.1; margin-top: 4px;
+    overflow: hidden; text-overflow: ellipsis; }}
+  .sp {{ font-size: 9pt; color: #3A453C; margin-top: 4px; font-style: italic;
+    overflow: hidden; text-overflow: ellipsis; }}
+  .brand {{ font-size: 7pt; color: #7A8A7C; letter-spacing: 1px; margin-top: 6px; }}
+  .toolbar {{ max-width: 80mm; margin: 16px auto; display: flex; gap: 8px; justify-content: center; }}
+  .toolbar button {{ background: #3C6E4A; color: #fff; border: 0; padding: 8px 16px;
+    border-radius: 999px; font-weight: 700; cursor: pointer; }}
+  @media print {{ body {{ background: #fff; padding: 0; }} .toolbar {{ display: none; }} .label {{ box-shadow: none; }} }}
+</style></head>
+<body>
+  <div class="label">
+    <div class="qr">{svg}</div>
+    <div class="info">
+      <div class="num">{number}</div>
+      <div class="name">{name}</div>
+      <div class="sp">{species}</div>
+      <div class="brand">BotanIQ</div>
+    </div>
+  </div>
+  <div class="toolbar">
+    <button onclick="window.print()">Print label</button>
+  </div>
+</body></html>"""
+    return HTMLResponse(html)
+
+
+# ----- STL tag generation -----
+def _box_mesh(x0, y0, z0, x1, y1, z1):
+    """Return 12-triangle box vertex array."""
+    v = np.array([
+        [x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0],
+        [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1],
+    ])
+    faces = np.array([
+        [0, 3, 1], [1, 3, 2],  # bottom
+        [4, 5, 7], [5, 6, 7],  # top
+        [0, 1, 4], [1, 5, 4],  # front
+        [2, 3, 6], [3, 7, 6],  # back
+        [1, 2, 5], [2, 6, 5],  # right
+        [0, 4, 3], [3, 4, 7],  # left
+    ])
+    tris = v[faces]
+    return tris
+
+
+def _text_matrix(text: str, height_px: int = 28) -> np.ndarray:
+    """Render text into a binary 2D matrix using PIL default font (no external fonts)."""
+    # Use a slightly larger pixel font for clarity
+    font = ImageFont.load_default()
+    img = Image.new("L", (max(8, len(text) * 7 + 8), height_px), 0)
+    draw = ImageDraw.Draw(img)
+    draw.text((2, max(2, (height_px - 11) // 2)), text, fill=255, font=font)
+    arr = np.array(img) > 128
+    # Trim transparent borders
+    if arr.any():
+        ys, xs = np.where(arr)
+        arr = arr[ys.min(): ys.max() + 1, xs.min(): xs.max() + 1]
+    return arr
+
+
+def _build_tag_stl(name: str, number: str, qr_data: str) -> bytes:
+    """
+    Build a flat 3D-printable tag (~60×35×2mm) with:
+      - solid plate
+      - QR code as raised cells (1mm above)
+      - text (name + number) extruded above the plate
+      - hanging hole
+    Returns binary STL bytes.
+    """
+    plate_w = 70.0
+    plate_h = 35.0
+    plate_t = 2.0
+    cell_h = 1.0  # extrude height of QR / text
+
+    triangles: list = []
+
+    # 1. Plate (with a notch removed for hole)
+    triangles.extend(_box_mesh(0, 0, 0, plate_w, plate_h, plate_t))
+
+    # 2. QR code on left side
+    qr_size = 26.0
+    qr_x = 3.0
+    qr_y = (plate_h - qr_size) / 2
+    matrix = _qr_matrix(qr_data)
+    n = matrix.shape[0]
+    cell = qr_size / n
+    for y in range(n):
+        for x in range(n):
+            if matrix[y, x]:
+                x0 = qr_x + x * cell
+                # Y inverted so QR isn't mirrored
+                y0 = qr_y + (n - 1 - y) * cell
+                triangles.extend(_box_mesh(x0, y0, plate_t, x0 + cell, y0 + cell, plate_t + cell_h))
+
+    # 3. Text region (name + number) on right side
+    text_area_x = qr_x + qr_size + 4.0
+    text_area_w = plate_w - text_area_x - 4.0
+    text_area_h = plate_h - 6.0
+
+    # Number on top, name below
+    number_arr = _text_matrix(number or "", height_px=24)
+    name_arr = _text_matrix((name or "")[:18], height_px=24)
+
+    def _place(arr: np.ndarray, x_start: float, y_start: float, target_w: float, target_h: float):
+        if arr.size == 0:
+            return
+        rows, cols = arr.shape
+        scale = min(target_w / cols, target_h / rows)
+        if scale <= 0:
+            return
+        px = scale
+        for ry in range(rows):
+            for cx in range(cols):
+                if arr[ry, cx]:
+                    x0 = x_start + cx * px
+                    y0 = y_start + (rows - 1 - ry) * px
+                    triangles.extend(_box_mesh(x0, y0, plate_t, x0 + px, y0 + px, plate_t + cell_h))
+
+    # Number block (top half)
+    _place(number_arr, text_area_x, 3 + text_area_h * 0.55, text_area_w, text_area_h * 0.40)
+    # Name block (bottom half)
+    _place(name_arr, text_area_x, 3 + text_area_h * 0.08, text_area_w, text_area_h * 0.40)
+
+    # 4. Hanging hole — implemented as an extruded bump (acts as ring on outside top).
+    # We add a small donut-like raised cylinder by approximating with boxes.
+    hole_cx = plate_w - 4.5
+    hole_cy = plate_h - 4.5
+    # simple raised square ring (purely cosmetic indicator; print can drill the hole)
+    ring_outer = 3.0
+    ring_inner = 1.5
+    for dx in np.linspace(-ring_outer, ring_outer, 9):
+        for dy in np.linspace(-ring_outer, ring_outer, 9):
+            r = (dx ** 2 + dy ** 2) ** 0.5
+            if ring_inner < r <= ring_outer:
+                s = 0.6
+                triangles.extend(_box_mesh(hole_cx + dx, hole_cy + dy, plate_t, hole_cx + dx + s, hole_cy + dy + s, plate_t + cell_h))
+
+    if not triangles:
+        triangles.extend(_box_mesh(0, 0, 0, plate_w, plate_h, plate_t))
+
+    all_tris = np.concatenate(triangles, axis=0)
+    n_tri = all_tris.shape[0] // 3
+    data = np.zeros(n_tri, dtype=stl_mesh.Mesh.dtype)
+    data["vectors"] = all_tris.reshape(n_tri, 3, 3)
+    m = stl_mesh.Mesh(data)
+    buf = io.BytesIO()
+    m.save("tag.stl", fh=buf, mode=1)  # mode=1 binary
+    return buf.getvalue()
+
+
+@api_router.get("/plants/{plant_id}/tag.stl")
+async def plant_tag_stl(plant_id: str):
+    plant = await db.plants.find_one({"id": plant_id}, {"_id": 0})
+    if not plant:
+        raise HTTPException(status_code=404, detail="Plant not found")
+    qr_data = plant.get("qr_code") or plant_id
+    name = plant.get("name") or "Plant"
+    number = plant.get("plant_number") or ""
+    stl_bytes = _build_tag_stl(name=name, number=number, qr_data=qr_data)
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", f"{number or 'plant'}_{name}")[:40] or "plant_tag"
+    headers = {"Content-Disposition": f'attachment; filename="{safe}.stl"'}
+    return Response(content=stl_bytes, media_type="model/stl", headers=headers)
 
 
 app.include_router(api_router)

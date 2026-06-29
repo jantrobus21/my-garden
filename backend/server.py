@@ -386,6 +386,39 @@ async def analyze_health(payload: AnalyzeImageRequest):
     return analysis
 
 
+# ===== AI: Identify plant species =====
+@api_router.post("/analyze/identify")
+async def analyze_identify(payload: AnalyzeImageRequest):
+    system = (
+        "You are a professional botanist. Identify houseplants from photos. "
+        "Return ONLY structured JSON."
+    )
+    prompt = (
+        "Identify the plant in this photo. Return ONLY this JSON:\n"
+        "{\n"
+        '  "common_name": "best common name (e.g. Monstera, Snake Plant)",\n'
+        '  "species": "scientific name (e.g. Monstera deliciosa)",\n'
+        '  "confidence": 0.0-1.0,\n'
+        '  "note": "one short sentence about care if confident, empty otherwise"\n'
+        "}\n"
+        "If you cannot tell with reasonable confidence, set common_name to "
+        '"Unknown plant" and confidence below 0.4. Respond with ONLY the JSON.'
+    )
+    try:
+        raw = await _llm_vision(prompt, payload.image_base64, system)
+    except Exception as e:
+        logger.exception("identify failed")
+        raise HTTPException(status_code=502, detail=f"AI identify failed: {e}")
+
+    data = _extract_json(raw)
+    return {
+        "common_name": str(data.get("common_name") or "Unknown plant")[:80],
+        "species": str(data.get("species") or "")[:120],
+        "confidence": float(data.get("confidence") or 0.0),
+        "note": str(data.get("note") or "")[:240],
+    }
+
+
 # ===== Dashboard summary =====
 @api_router.get("/summary")
 async def summary():

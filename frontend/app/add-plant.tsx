@@ -31,6 +31,34 @@ export default function AddPlant() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [scannerOpen, setScannerOpen] = useState(false);
+  const [identifying, setIdentifying] = useState(false);
+  const [identifyNote, setIdentifyNote] = useState<string | null>(null);
+
+  const identify = async () => {
+    if (!photoB64 || identifying) return;
+    setIdentifying(true);
+    setIdentifyNote(null);
+    setError(null);
+    try {
+      const r = await api.identifyPlant(photoB64);
+      if (r.confidence < 0.4 || !r.common_name || r.common_name === "Unknown plant") {
+        setIdentifyNote("Couldn't identify confidently — try a clearer, well-lit photo of the leaves.");
+      } else {
+        if (!name.trim()) setName(r.common_name);
+        if (!species.trim() && r.species) setSpecies(r.species);
+        const conf = Math.round(r.confidence * 100);
+        setIdentifyNote(
+          `Identified as ${r.common_name}${r.species ? ` (${r.species})` : ""} · ${conf}% confident${r.note ? " — " + r.note : ""}`
+        );
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (e: any) {
+      setIdentifyNote(null);
+      setError(e?.message?.includes("502") ? "AI identification unavailable right now." : "Could not identify plant.");
+    } finally {
+      setIdentifying(false);
+    }
+  };
 
   const pick = async (source: "camera" | "library") => {
     if (source === "camera") {
@@ -106,6 +134,27 @@ export default function AddPlant() {
               <Text style={styles.photoMiniText}>Library</Text>
             </Pressable>
           </View>
+
+          {photoB64 ? (
+            <Pressable
+              testID="identify-plant-button"
+              onPress={identify}
+              disabled={identifying}
+              style={[styles.identifyBtn, identifying && { opacity: 0.7 }]}
+            >
+              {identifying ? (
+                <ActivityIndicator color={colors.onBrandPrimary} />
+              ) : (
+                <>
+                  <Ionicons name="sparkles" size={16} color={colors.onBrandPrimary} />
+                  <Text style={styles.identifyBtnText}>Identify plant with AI</Text>
+                </>
+              )}
+            </Pressable>
+          ) : null}
+          {identifyNote ? (
+            <Text style={styles.identifyNote} testID="identify-note">{identifyNote}</Text>
+          ) : null}
 
           <Field label="Name *" value={name} onChange={setName} placeholder="e.g. Monstera Mike" testID="input-name" />
           <Field label="Species" value={species} onChange={setSpecies} placeholder="e.g. Monstera deliciosa" testID="input-species" />
@@ -203,6 +252,20 @@ const styles = StyleSheet.create({
     backgroundColor: colors.brandSecondary, paddingVertical: spacing.sm, borderRadius: radius.pill,
   },
   photoMiniText: { color: colors.onBrandSecondary, fontWeight: "700", fontSize: 13 },
+  identifyBtn: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    backgroundColor: colors.brandPrimary,
+    paddingVertical: spacing.sm + 2, borderRadius: radius.pill,
+  },
+  identifyBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 13 },
+  identifyNote: {
+    color: colors.onBrandTertiary,
+    backgroundColor: colors.brandTertiary,
+    padding: spacing.sm,
+    borderRadius: radius.sm,
+    fontSize: 12,
+    lineHeight: 17,
+  },
   label: { fontSize: 13, color: colors.onSurfaceSecondary, fontWeight: "600" },
   input: {
     backgroundColor: colors.surfaceSecondary,

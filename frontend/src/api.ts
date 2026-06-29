@@ -79,6 +79,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ image_base64, plant_id }),
     }),
+  identifyPlant: (image_base64: string) =>
+    req<{ common_name: string; species: string; confidence: number; note: string }>(
+      "/analyze/identify",
+      { method: "POST", body: JSON.stringify({ image_base64 }) }
+    ),
 
   summary: () =>
     req<{ total: number; needs_water: number; needs_fertilizer: number; issues: number; healthy: number }>(

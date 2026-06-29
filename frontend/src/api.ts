@@ -12,6 +12,7 @@ export type Plant = {
   species?: string;
   location?: string;
   photo_base64?: string;
+  plant_number?: string;
   qr_code?: string;
   status: "healthy" | "thirsty" | "needs_fertilizer" | "issue";
   latest_summary?: string;
@@ -56,6 +57,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   listPlants: () => req<Plant[]>("/plants"),
+  nextPlantNumber: () => req<{ plant_number: string }>("/plants/next-number"),
   getPlant: (id: string) => req<Plant>(`/plants/${id}`),
   getPlantByQr: (code: string) => req<Plant>(`/plants/qr/${encodeURIComponent(code)}`),
   createPlant: (body: Partial<Plant>) =>

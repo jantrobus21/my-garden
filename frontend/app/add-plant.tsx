@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -26,6 +26,8 @@ export default function AddPlant() {
   const [name, setName] = useState("");
   const [species, setSpecies] = useState("");
   const [location, setLocation] = useState("");
+  const [plantNumber, setPlantNumber] = useState("");
+  const [suggestedNumber, setSuggestedNumber] = useState("");
   const [qrCode, setQrCode] = useState("");
   const [photoB64, setPhotoB64] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -33,6 +35,10 @@ export default function AddPlant() {
   const [scannerOpen, setScannerOpen] = useState(false);
   const [identifying, setIdentifying] = useState(false);
   const [identifyNote, setIdentifyNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.nextPlantNumber().then((r) => setSuggestedNumber(r.plant_number)).catch(() => {});
+  }, []);
 
   const identify = async () => {
     if (!photoB64 || identifying) return;
@@ -161,6 +167,35 @@ export default function AddPlant() {
           <Field label="Location" value={location} onChange={setLocation} placeholder="e.g. Living room window" testID="input-location" />
 
           <View style={{ gap: 6 }}>
+            <Text style={styles.label}>Plant ID</Text>
+            <Text style={styles.helper}>
+              Your own numbering, format P followed by 4 digits (e.g. P0001). Leave blank to use the next available number.
+            </Text>
+            <View style={styles.qrRow}>
+              <TextInput
+                testID="input-plant-number"
+                value={plantNumber}
+                onChangeText={(t) => setPlantNumber(t.toUpperCase().slice(0, 5))}
+                placeholder={suggestedNumber || "P0001"}
+                placeholderTextColor="#8a988c"
+                autoCapitalize="characters"
+                autoCorrect={false}
+                maxLength={5}
+                style={[styles.input, { flex: 1, letterSpacing: 1 }]}
+              />
+              {suggestedNumber ? (
+                <Pressable
+                  testID="use-suggested-number"
+                  onPress={() => setPlantNumber(suggestedNumber)}
+                  style={styles.suggestBtn}
+                >
+                  <Text style={styles.suggestBtnText}>Use {suggestedNumber}</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+
+          <View style={{ gap: 6 }}>
             <Text style={styles.label}>QR tag</Text>
             <Text style={styles.helper}>
               Already 3D-printed a tag? Scan its QR or type the code below. Leave blank to auto-generate.
@@ -282,6 +317,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md, borderRadius: radius.md,
   },
   scanBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 13 },
+  suggestBtn: {
+    flexDirection: "row", alignItems: "center", gap: 6,
+    backgroundColor: colors.brandSecondary,
+    paddingHorizontal: spacing.md, borderRadius: radius.md,
+    justifyContent: "center",
+  },
+  suggestBtnText: { color: colors.onBrandSecondary, fontWeight: "700", fontSize: 13 },
   footer: {
     padding: spacing.lg,
     borderTopWidth: 1, borderTopColor: colors.border,

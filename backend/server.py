@@ -35,6 +35,7 @@ class Plant(BaseModel):
     species: Optional[str] = ""
     location: Optional[str] = ""
     photo_base64: Optional[str] = ""
+    plant_number: Optional[str] = ""
     qr_code: Optional[str] = ""
     status: str = "healthy"  # healthy | thirsty | needs_fertilizer | issue
     latest_summary: Optional[str] = ""
@@ -46,6 +47,7 @@ class PlantCreate(BaseModel):
     species: Optional[str] = ""
     location: Optional[str] = ""
     photo_base64: Optional[str] = ""
+    plant_number: Optional[str] = ""
     qr_code: Optional[str] = ""
 
 
@@ -54,6 +56,7 @@ class PlantUpdate(BaseModel):
     species: Optional[str] = None
     location: Optional[str] = None
     photo_base64: Optional[str] = None
+    plant_number: Optional[str] = None
     qr_code: Optional[str] = None
     status: Optional[str] = None
     latest_summary: Optional[str] = None
@@ -149,15 +152,50 @@ async def _llm_vision(prompt: str, image_b64: str, system: str) -> str:
     return str(result)
 
 
+PLANT_NUMBER_RE = re.compile(r"^P\d{4}$", re.IGNORECASE)
+
+
+async def _next_plant_number() -> str:
+    docs = await db.plants.find({"plant_number": {"$regex": "^P\\d{4}$", "$options": "i"}}, {"plant_number": 1, "_id": 0}).to_list(10000)
+    used = set()
+    for d in docs:
+        pn = (d.get("plant_number") or "").upper()
+        if PLANT_NUMBER_RE.match(pn):
+            try:
+                used.add(int(pn[1:]))
+            except Exception:
+                pass
+    n = 1
+    while n in used:
+        n += 1
+    return f"P{n:04d}"
+
+
 # ===== Plant endpoints =====
 @api_router.get("/")
 async def root():
     return {"message": "BotanIQ API running"}
 
 
+@api_router.get("/plants/next-number")
+async def get_next_plant_number():
+    return {"plant_number": await _next_plant_number()}
+
+
 @api_router.post("/plants", response_model=Plant)
 async def create_plant(payload: PlantCreate):
     plant = Plant(**payload.model_dump())
+    # plant_number
+    if plant.plant_number:
+        plant.plant_number = plant.plant_number.strip().upper()
+        if not PLANT_NUMBER_RE.match(plant.plant_number):
+            raise HTTPException(status_code=400, detail="Plant ID must be P followed by 4 digits, e.g. P0001")
+        clash = await db.plants.find_one({"plant_number": plant.plant_number})
+        if clash:
+            raise HTTPException(status_code=409, detail=f"Plant ID '{plant.plant_number}' is already in use.")
+    else:
+        plant.plant_number = await _next_plant_number()
+    # qr_code
     if plant.qr_code:
         plant.qr_code = plant.qr_code.strip()
     if not plant.qr_code:
@@ -198,6 +236,14 @@ async def get_plant_by_qr(qr_code: str):
 @api_router.patch("/plants/{plant_id}", response_model=Plant)
 async def update_plant(plant_id: str, payload: PlantUpdate):
     updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if "plant_number" in updates:
+        updates["plant_number"] = updates["plant_number"].strip().upper()
+        if updates["plant_number"] and not PLANT_NUMBER_RE.match(updates["plant_number"]):
+            raise HTTPException(status_code=400, detail="Plant ID must be P followed by 4 digits, e.g. P0001")
+        if updates["plant_number"]:
+            clash = await db.plants.find_one({"plant_number": updates["plant_number"], "id": {"$ne": plant_id}})
+            if clash:
+                raise HTTPException(status_code=409, detail=f"Plant ID '{updates['plant_number']}' is already in use.")
     if "qr_code" in updates:
         updates["qr_code"] = updates["qr_code"].strip()
         if not updates["qr_code"]:

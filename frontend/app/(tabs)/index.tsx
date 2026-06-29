@@ -79,6 +79,9 @@ export default function Dashboard() {
           <Text style={[styles.statusChipText, { color: meta.fg }]}>{meta.label}</Text>
         </View>
         <View style={styles.cardFooter}>
+          {item.plant_number ? (
+            <Text style={styles.cardNumber}>{item.plant_number}</Text>
+          ) : null}
           <Text style={styles.cardTitle} numberOfLines={1}>{item.name}</Text>
           {item.species ? <Text style={styles.cardSubtitle} numberOfLines={1}>{item.species}</Text> : null}
         </View>
@@ -198,6 +201,7 @@ const styles = StyleSheet.create({
   },
   cardImage: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%" },
   cardFooter: { position: "absolute", left: 12, right: 12, bottom: 12 },
+  cardNumber: { color: "rgba(240,244,238,0.85)", fontSize: 10, fontWeight: "700", letterSpacing: 1.5, marginBottom: 2 },
   cardTitle: { color: colors.onSurfaceInverse, fontSize: 17, fontWeight: "700" },
   cardSubtitle: { color: "rgba(240,244,238,0.8)", fontSize: 12, marginTop: 2 },
   statusChip: {

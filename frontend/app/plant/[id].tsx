@@ -139,6 +139,9 @@ export default function PlantDetail() {
               <Text style={[styles.statusChipText, { color: meta.fg }]}>{meta.label}</Text>
             </View>
             <Text style={styles.heroTitle}>{plant.name}</Text>
+            {plant.plant_number ? (
+              <Text style={styles.heroNumber}>{plant.plant_number}</Text>
+            ) : null}
             {plant.species ? <Text style={styles.heroSubtitle}>{plant.species}</Text> : null}
             {plant.location ? (
               <Text style={styles.heroLocation}>
@@ -317,6 +320,15 @@ const styles = StyleSheet.create({
   statusChip: { alignSelf: "flex-start", paddingHorizontal: 10, paddingVertical: 4, borderRadius: radius.pill, marginBottom: 4 },
   statusChipText: { fontSize: 11, fontWeight: "700" },
   heroTitle: { fontSize: 30, fontWeight: "700", color: colors.onSurfaceInverse, letterSpacing: -0.5 },
+  heroNumber: {
+    alignSelf: "flex-start",
+    fontSize: 12, fontWeight: "700", letterSpacing: 1.5,
+    color: colors.onSurfaceInverse,
+    backgroundColor: "rgba(255,255,255,0.18)",
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.sm,
+    marginTop: 4,
+    overflow: "hidden",
+  },
   heroSubtitle: { fontSize: 14, color: "rgba(240,244,238,0.85)" },
   heroLocation: { fontSize: 12, color: "rgba(240,244,238,0.7)", marginTop: 2 },
 

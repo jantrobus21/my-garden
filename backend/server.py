@@ -217,6 +217,10 @@ class ChangePinPayload(BaseModel):
     new_pin: str = Field(..., min_length=MIN_PIN_LENGTH, max_length=10)
 
 
+class RegenerateRecoveryPayload(BaseModel):
+    pin: str = Field(..., min_length=MIN_PIN_LENGTH, max_length=10)
+
+
 class ResetPinPayload(BaseModel):
     recovery_code: str = Field(..., min_length=8, max_length=64)
     new_pin: str = Field(..., min_length=MIN_PIN_LENGTH, max_length=10)
@@ -380,17 +384,49 @@ async def auth_change_pin(payload: ChangePinPayload, session: dict = Depends(req
         raise HTTPException(status_code=400, detail="New PIN must be different")
     new_hash = pwd_context.hash(payload.new_pin)
     await db.admin.update_one({"_id": "admin"}, {"$set": {"pin_hash": new_hash}})
-    # Invalidate all other sessions; keep this one alive.
-    await db.sessions.delete_many({"token_hash": {"$ne": session["token_hash"]}})
-    expires_at = session.get("expires_at") or datetime.now(timezone.utc)
-    return AuthOk(token="ROTATED", expires_at=expires_at)
+    # Rotate session: wipe ALL sessions (including this one) and issue a fresh token.
+    await db.sessions.delete_many({})
+    new_session = await _create_session()
+    return AuthOk(token=new_session["token"], expires_at=new_session["expires_at"])
 
 
 @api_router.post("/auth/regenerate-recovery")
-async def auth_regenerate_recovery(_: dict = Depends(require_auth)):
+async def auth_regenerate_recovery(payload: RegenerateRecoveryPayload, _: dict = Depends(require_auth)):
+    if not payload.pin.isdigit():
+        raise HTTPException(status_code=400, detail="PIN must be digits only")
+    admin = await db.admin.find_one({"_id": "admin"})
+    if not admin:
+        raise HTTPException(status_code=400, detail="Not configured")
+    # Honour the lockout window for this PIN-gated action too.
+    now = datetime.now(timezone.utc)
+    lock_until = admin.get("lock_until")
+    if lock_until and lock_until.tzinfo is None:
+        lock_until = lock_until.replace(tzinfo=timezone.utc)
+    if lock_until and now < lock_until:
+        wait = int((lock_until - now).total_seconds()) + 1
+        raise HTTPException(status_code=429, detail=f"Too many attempts. Try again in {wait}s.")
+    if not pwd_context.verify(payload.pin, admin["pin_hash"]):
+        # Same brute-force tracking as /auth/login
+        updated = await db.admin.find_one_and_update(
+            {"_id": "admin"},
+            {"$inc": {"failed_attempts": 1, "total_failed": 1}},
+            return_document=True,
+        )
+        failed = updated.get("failed_attempts", 0)
+        total = updated.get("total_failed", 0)
+        if failed >= MAX_PIN_ATTEMPTS:
+            lock_seconds = _lock_seconds_for(total)
+            await db.admin.update_one(
+                {"_id": "admin"},
+                {"$set": {"lock_until": now + timedelta(seconds=lock_seconds), "failed_attempts": 0}},
+            )
+        raise HTTPException(status_code=401, detail="PIN is incorrect")
     new_code = _generate_recovery_code()
     new_hash = pwd_context.hash(new_code)
-    await db.admin.update_one({"_id": "admin"}, {"$set": {"recovery_hash": new_hash}})
+    await db.admin.update_one(
+        {"_id": "admin"},
+        {"$set": {"recovery_hash": new_hash, "failed_attempts": 0, "lock_until": None}},
+    )
     return {"recovery_code": new_code}
 
 
@@ -401,6 +437,14 @@ async def auth_reset_pin_with_code(payload: ResetPinPayload):
     admin = await db.admin.find_one({"_id": "admin"})
     if not admin:
         raise HTTPException(status_code=400, detail="Not configured")
+    # Throttle: honour the same lockout window as /auth/login.
+    now = datetime.now(timezone.utc)
+    lock_until = admin.get("lock_until")
+    if lock_until and lock_until.tzinfo is None:
+        lock_until = lock_until.replace(tzinfo=timezone.utc)
+    if lock_until and now < lock_until:
+        wait = int((lock_until - now).total_seconds()) + 1
+        raise HTTPException(status_code=429, detail=f"Too many attempts. Try again in {wait}s.")
     recovery_hash = admin.get("recovery_hash")
     if not recovery_hash:
         raise HTTPException(status_code=400, detail="No recovery code set for this account")
@@ -408,10 +452,20 @@ async def auth_reset_pin_with_code(payload: ResetPinPayload):
     if "-" not in submitted and len(submitted) == 16:
         submitted = f"{submitted[0:4]}-{submitted[4:8]}-{submitted[8:12]}-{submitted[12:16]}"
     if not pwd_context.verify(submitted, recovery_hash):
-        await db.admin.find_one_and_update(
+        # Shared brute-force counter + lockout escalation.
+        updated = await db.admin.find_one_and_update(
             {"_id": "admin"},
             {"$inc": {"failed_attempts": 1, "total_failed": 1}},
+            return_document=True,
         )
+        failed = updated.get("failed_attempts", 0)
+        total = updated.get("total_failed", 0)
+        if failed >= MAX_PIN_ATTEMPTS:
+            lock_seconds = _lock_seconds_for(total)
+            await db.admin.update_one(
+                {"_id": "admin"},
+                {"$set": {"lock_until": now + timedelta(seconds=lock_seconds), "failed_attempts": 0}},
+            )
         raise HTTPException(status_code=401, detail="Invalid recovery code")
     new_pin_hash = pwd_context.hash(payload.new_pin)
     new_recovery = _generate_recovery_code()

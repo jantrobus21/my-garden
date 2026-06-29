@@ -44,6 +44,16 @@ export default function PinScreen() {
     if (mode) setTimeout(() => inputRef.current?.focus(), 200);
   }, [mode]);
 
+  // Auto-clear plaintext recovery code from memory after 60s (HP-2)
+  useEffect(() => {
+    if (!postSetupCode) return;
+    const t = setTimeout(() => {
+      setPostSetupCode(null);
+      router.replace("/(tabs)");
+    }, 60_000);
+    return () => clearTimeout(t);
+  }, [postSetupCode, router]);
+
   const submit = async () => {
     if (busy || !mode) return;
     if (pin.length < 6 || pin.length > 10 || !/^\d+$/.test(pin)) {

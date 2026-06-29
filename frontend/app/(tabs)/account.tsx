@@ -8,14 +8,13 @@ import {
   Text,
   TextInput,
   View,
-} from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+} from "react-native";import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 
-import { api, clearToken } from "@/src/api";
+import { api, clearToken, saveToken } from "@/src/api";
 import { colors, radius, spacing } from "@/src/theme";
 
 export default function AccountTab() {
@@ -70,11 +69,12 @@ export default function AccountTab() {
     }
     setBusy(true);
     try {
-      await api.changePin(currentPin, newPin);
+      const res = await api.changePin(currentPin, newPin);
+      await saveToken(res.token);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       setCurrentPin(""); setNewPin(""); setConfirmPin("");
       setChangeOpen(false);
-      setInfo("PIN updated. Other devices were signed out.");
+      setInfo("PIN updated. All devices were signed out and this one re-authenticated.");
     } catch (e: any) {
       const m = String(e?.message || "");
       if (m.includes("401")) setError("Current PIN is wrong");
@@ -85,27 +85,28 @@ export default function AccountTab() {
     }
   };
 
+  const [regenOpen, setRegenOpen] = useState(false);
+  const [regenPin, setRegenPin] = useState("");
+
   const onRegenerate = async () => {
-    Alert.alert(
-      "Generate a new recovery code?",
-      "Your previous recovery code will stop working.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Generate",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              const r = await api.regenerateRecovery();
-              setNewRecoveryCode(r.recovery_code);
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            } catch {
-              setError("Could not generate code");
-            }
-          },
-        },
-      ]
-    );
+    if (!regenOpen) { setRegenOpen(true); setError(null); setInfo(null); return; }
+    setError(null);
+    if (regenPin.length < 6) { setError("Enter your current PIN to confirm"); return; }
+    setBusy(true);
+    try {
+      const r = await api.regenerateRecovery(regenPin);
+      setNewRecoveryCode(r.recovery_code);
+      setRegenPin("");
+      setRegenOpen(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (e: any) {
+      const m = String(e?.message || "");
+      if (m.includes("429")) setError("Too many attempts. Try again later.");
+      else if (m.includes("401")) setError("PIN is incorrect");
+      else setError("Could not generate code");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const copyRecovery = async () => {
@@ -114,6 +115,13 @@ export default function AccountTab() {
     Haptics.selectionAsync();
     setInfo("Recovery code copied to clipboard.");
   };
+
+  // Auto-clear plaintext recovery code from memory after 60s (HP-2)
+  useEffect(() => {
+    if (!newRecoveryCode) return;
+    const t = setTimeout(() => setNewRecoveryCode(null), 60_000);
+    return () => clearTimeout(t);
+  }, [newRecoveryCode]);
 
   return (
     <SafeAreaView style={styles.container} edges={["top"]} testID="account-screen">
@@ -199,9 +207,30 @@ export default function AccountTab() {
             testID="regenerate-recovery"
             icon="refresh-outline"
             label="Generate new recovery code"
-            sublabel="Invalidates your previous code"
+            sublabel="Requires your current PIN — invalidates the previous code"
             onPress={onRegenerate}
           />
+          {regenOpen ? (
+            <View style={styles.formCard}>
+              <Text style={styles.label}>Confirm with your current PIN</Text>
+              <TextInput
+                value={regenPin}
+                onChangeText={(t) => setRegenPin(t.replace(/\D/g, "").slice(0, 10))}
+                secureTextEntry keyboardType="number-pad" maxLength={10}
+                style={styles.pinField} testID="regen-pin"
+                placeholder="••••••" placeholderTextColor="#8a988c"
+              />
+              {error ? <Text style={styles.error}>{error}</Text> : null}
+              <View style={{ flexDirection: "row", gap: spacing.sm, marginTop: 8 }}>
+                <Pressable onPress={() => { setRegenOpen(false); setRegenPin(""); setError(null); }} style={[styles.btn, styles.btnGhost]}>
+                  <Text style={styles.btnGhostText}>Cancel</Text>
+                </Pressable>
+                <Pressable disabled={busy} onPress={onRegenerate} style={[styles.btn, styles.btnPrimary, busy && { opacity: 0.6 }]} testID="submit-regen">
+                  {busy ? <ActivityIndicator color={colors.onBrandPrimary} /> : <Text style={styles.btnPrimaryText}>Generate code</Text>}
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
         </Section>
 
         <Section title="Session">

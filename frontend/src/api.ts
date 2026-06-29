@@ -114,8 +114,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ current_pin, new_pin }),
     }),
-  regenerateRecovery: () =>
-    req<{ recovery_code: string }>("/auth/regenerate-recovery", { method: "POST" }),
+  regenerateRecovery: (pin: string) =>
+    req<{ recovery_code: string }>("/auth/regenerate-recovery", {
+      method: "POST",
+      body: JSON.stringify({ pin }),
+    }),
   resetPin: (recovery_code: string, new_pin: string) =>
     req<{ token: string; expires_at: string; recovery_code: string }>(
       "/auth/reset-pin-with-code",

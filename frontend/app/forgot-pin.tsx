@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -62,8 +62,19 @@ export default function ForgotPin() {
   const copyAndFinish = async () => {
     if (newCode) await Clipboard.setStringAsync(newCode);
     Haptics.selectionAsync();
+    setNewCode(null);
     router.replace("/(tabs)");
   };
+
+  // Auto-clear plaintext recovery code from memory after 60s (HP-2)
+  useEffect(() => {
+    if (!newCode) return;
+    const t = setTimeout(() => {
+      setNewCode(null);
+      router.replace("/(tabs)");
+    }, 60_000);
+    return () => clearTimeout(t);
+  }, [newCode, router]);
 
   if (newCode) {
     return (
